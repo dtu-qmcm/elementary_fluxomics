@@ -332,14 +332,11 @@ def run_2d_scan(dG1_values, dG2_values, timepoints):
 
 
 def plot_landscape(df, value_col, title_suffix, output_path):
-    """Plot 2D SSR landscape as heatmap with contours."""
+    """Plot 2D SSR landscape as heatmap."""
     # Pivot for heatmap (FBA2 on x-axis, FBA1 on y-axis)
     pivot = df.pivot(index="FBA1_deltaG", columns="FBA2_deltaG", values=value_col)
 
     fig, ax = plt.subplots(figsize=(10, 8))
-
-    # Create meshgrid for contours
-    X, Y = np.meshgrid(pivot.columns.values, pivot.index.values)
 
     # Create heatmap
     im = ax.imshow(
@@ -354,15 +351,6 @@ def plot_landscape(df, value_col, title_suffix, output_path):
         ],
         cmap=cmc.batlow,
     )
-
-    # Add contour lines
-    contours = ax.contour(
-        X, Y, pivot.values,
-        colors="white",
-        alpha=0.7,
-        linewidths=0.8,
-    )
-    ax.clabel(contours, inline=True, fontsize=8, fmt="%.2f")
 
     # Mark the reference point
     ax.plot(
