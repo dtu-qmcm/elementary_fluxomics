@@ -1,0 +1,23 @@
+[experiment]
+name = "Glycolysis 1,2-13C Glucose Labeling"
+description = "EMU simulation of glycolysis and pentose phosphate pathway with 1,2-13C glucose tracer"
+version = "1.0.0"
+created = "2025-11-05"
+network_file = "glycolysis_network.toml"
+fluxes_file = "glycolysis_fluxes.toml"
+labeling_file = "glycolysis_labeling.toml"
+measurements_file = "glycolysis_measurements.toml"
+simulation_file = "glycolysis_simulation.toml"
+
+[output]
+results_dir = "results/"
+save_trajectories = true
+save_steady_state = true
+save_emu_decomposition = true
+plot_results = false
+
+[validation]
+check_mass_balance = true
+check_flux_balance = true
+check_isotope_conservation = true
+tolerance = 1e-8

@@ -1,0 +1,50 @@
+[metadata]
+description = "Simulation settings for glycolysis labeling experiment"
+solver_library = "diffrax"
+backend = "jax"
+
+# ============================================================================
+# Time Settings
+# ============================================================================
+
+[time]
+start = 0.0
+end = 100.0
+n_points = 1000
+units = "seconds"
+
+# Optional: specific output times for measurements
+output_times = [0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 100.0]
+
+# ============================================================================
+# ODE Solver Configuration
+# ============================================================================
+
+[ode_solver]
+method = "Kvaerno5"
+rtol = 1e-12
+atol = 1e-12
+max_steps = 100000
+min_step_size = 1e-10
+max_step_size = 10.0
+
+# ============================================================================
+# Steady-State Detection
+# ============================================================================
+
+[steady_state]
+enabled = true
+check_interval = 10.0
+tolerance = 1e-8
+min_time = 50.0
+variables = ["pyr", "g3p", "g6p", "r5p"]
+
+# ============================================================================
+# JAX Configuration
+# ============================================================================
+
+[jax]
+enable_jit = true
+enable_x64 = true
+platform = "cpu"
+device_id = 0

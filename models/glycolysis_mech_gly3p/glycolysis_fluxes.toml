@@ -1,0 +1,44 @@
+[metadata]
+description = "Glycolysis flux distribution"
+units = "mmol/g_DCW/h"
+steady_state = true
+
+# ============================================================================
+# External Fluxes (uptake and secretion rates)
+# ============================================================================
+
+[external_fluxes]
+glc_uptake = 100.0043      # Glucose uptake
+pyr_secretion = 92.5244    # Pyruvate secretion
+r5p_drain = 10.0        # Ribose-5-phosphate drain for biosynthesis
+
+# ============================================================================
+# Internal Fluxes (reaction rates)
+# ============================================================================
+
+[internal_fluxes]
+# Main glycolysis pathway
+GLUT2 = 100.0043           # Glucose transport
+HEX = 100.0043             # Hexokinase
+GPI = 82.5515              # Glucose-6-phosphate isomerase
+PFK = 93.52              # Phosphofructokinase
+FBA1 = 93.52              # Fructose-bisphosphate aldolase
+FBA2 = 93.52              # Fructose-bisphosphate aldolase
+GLY3PDH = 5               # Glycerol 3-phosphate dehydrogenase
+TPI = 88.52              # Triose-phosphate isomerase
+GAPD_PGK = 187.5244        # GAPD + PGK (2x flux due to 2 G3P per glucose)
+PGM = 187.5244             # Phosphoglycerate mutase
+PYK = 187.5244             # Pyruvate kinase
+pyr_drain = 87.5244        # Pyruvate export
+LDH = 100.0                # Lactate formation
+
+# Pentose phosphate pathway
+G6PDH2r_PGL = 17.4528      # Glucose-6-phosphate dehydrogenase
+GND = 17.4528             # 6-Phosphogluconate dehydrogenase
+RPI = 6.4842              # Ribose-5-phosphate isomerase (all RU5P → R5P)
+RPE = 10.9685               # Ribulose-5-phosphate epimerase (no XU5P production)
+r5p_drain = 1.0        # R5P for biomass (matches RPI production)
+TKTL1 = 5.4843             # Transketolase 1 (no non-oxidative PPP)
+TKTL2 = 5.4843             # Transketolase 2 (no non-oxidative PPP)
+TALA = 5.4843              # Transaldolase (no non-oxidative PPP)
+

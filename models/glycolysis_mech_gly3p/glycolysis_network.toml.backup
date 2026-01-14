@@ -1,0 +1,266 @@
+[network]
+name = "Glycolysis Network"
+description = "Core glycolysis pathway extracted from base_glycolysis_timeseries.mat"
+
+# ============================================================================
+# Metabolites
+# ============================================================================
+
+[metabolites.glc__D_e]
+name = "D-Glucose (external)"
+n_atoms = 6
+pool_size = 10.0
+is_external = true
+
+[metabolites.glc__D]
+name = "D-Glucose"
+n_atoms = 6
+pool_size = 1.0
+is_external = false
+
+[metabolites.g6p]
+name = "Glucose 6-phosphate"
+n_atoms = 6
+pool_size = 1.0
+is_external = false
+
+[metabolites.f6p]
+name = "Fructose 6-phosphate"
+n_atoms = 6
+pool_size = 1.0
+is_external = false
+
+[metabolites.fdp]
+name = "Fructose 1,6-bisphosphate"
+n_atoms = 6
+pool_size = 1.0
+is_external = false
+
+[metabolites.dhap]
+name = "Dihydroxyacetone phosphate"
+n_atoms = 3
+pool_size = 1.0
+is_external = false
+
+[metabolites.g3p]
+name = "Glyceraldehyde 3-phosphate"
+n_atoms = 3
+pool_size = 1.0
+is_external = false
+
+[metabolites."3pg"]
+name = "3-Phosphoglycerate"
+n_atoms = 3
+pool_size = 1.0
+is_external = false
+
+[metabolites.pep]
+name = "Phosphoenolpyruvate"
+n_atoms = 3
+pool_size = 1.0
+is_external = false
+
+[metabolites.pyr]
+name = "Pyruvate"
+n_atoms = 3
+pool_size = 1.0
+is_external = false
+
+[metabolites.pyr_e]
+name = "Pyruvate (external)"
+n_atoms = 3
+pool_size = 10.0
+is_external = true
+
+[metabolites.lac]
+name = "Lactate"
+n_atoms = 3
+pool_size = 1.0
+is_external = true
+
+# Pentose phosphate pathway metabolites
+[metabolites."6pgc"]
+name = "6-Phosphogluconate"
+n_atoms = 6
+pool_size = 1.0
+is_external = false
+
+[metabolites.ru5p__D]
+name = "Ribulose 5-phosphate"
+n_atoms = 5
+pool_size = 1.0
+is_external = false
+
+[metabolites.r5p]
+name = "Ribose 5-phosphate"
+n_atoms = 5
+pool_size = 1.0
+is_external = false
+
+[metabolites.r5p_e]
+name = "Ribose 5-phosphate (external)"
+n_atoms = 5
+pool_size = 10.0
+is_external = true
+
+[metabolites.xu5p__D]
+name = "Xylulose 5-phosphate"
+n_atoms = 5
+pool_size = 1.0
+is_external = false
+
+[metabolites.s7p]
+name = "Sedoheptulose 7-phosphate"
+n_atoms = 7
+pool_size = 1.0
+is_external = false
+
+[metabolites.e4p]
+name = "Erythrose 4-phosphate"
+n_atoms = 4
+pool_size = 1.0
+is_external = false
+
+[metabolites.co2]
+name = "Carbon dioxide"
+n_atoms = 1
+pool_size = 100.0
+is_external = true
+
+# ============================================================================
+# Reactions
+# ============================================================================
+
+[reactions.GLUT2]
+name = "Glucose transport"
+equation = "glc__D_e -> glc__D"
+atom_mapping = "abcdef -> abcdef"
+reversible = true
+
+[reactions.HEX]
+name = "Hexokinase"
+equation = "glc__D -> g6p"
+atom_mapping = "abcdef -> abcdef"
+reversible = true
+
+[reactions.GPI]
+name = "Glucose-6-phosphate isomerase"
+equation = "g6p -> f6p"
+atom_mapping = "abcdef -> abcdef"
+reversible = true
+
+[reactions.PFK]
+name = "Phosphofructokinase"
+equation = "f6p -> fdp"
+atom_mapping = "abcdef -> abcdef"
+reversible = true
+
+[reactions.FBA]
+name = "Fructose-bisphosphate aldolase"
+# FDP (C1-C2-C3-C4-C5-C6) -> DHAP (C1-C2-C3) + G3P (C4-C5-C6)
+substrates = {fdp = [{0 = 0, 1 = 1, 2 = 2, 3 = 3, 4 = 4, 5 = 5}]}
+products = {dhap = [{0 = 0, 1 = 1, 2 = 2}], g3p = [{0 = 3, 1 = 4, 2 = 5}]}
+reversible = true
+
+[reactions.TPI]
+name = "Triose-phosphate isomerase"
+# TPI reverses carbon numbering: DHAP C1→G3P C3, DHAP C2→G3P C2, DHAP C3→G3P C1
+equation = "dhap -> g3p"
+atom_mapping = "abc -> cba"
+reversible = true
+
+[reactions.GAPD_PGK]
+name = "Glyceraldehyde-3-phosphate dehydrogenase + Phosphoglycerate kinase"
+equation = "g3p -> 3pg"
+atom_mapping = "abc -> abc"
+reversible = true
+
+[reactions.PGM]
+name = "Phosphoglycerate mutase"
+equation = "3pg -> pep"
+atom_mapping = "abc -> abc"
+reversible = true
+
+[reactions.PYK]
+name = "Pyruvate kinase"
+equation = "pep -> pyr"
+atom_mapping = "abc -> abc"
+reversible = true
+
+[reactions.pyr_drain]
+name = "Pyruvate drain"
+equation = "pyr -> pyr_e"
+atom_mapping = "abc -> abc"
+reversible = true
+
+[reactions.LDH]
+name = "Lactate dehydrogenase"
+equation = "pyr -> lac"
+atom_mapping = "abc -> abc"
+reversible = true
+
+# Pentose phosphate pathway reactions
+[reactions.G6PDH2r_PGL]
+name = "Glucose-6-phosphate dehydrogenase"
+equation = "g6p -> 6pgc"
+atom_mapping = "abcdef -> abcdef"
+reversible = true
+
+[reactions.GND]
+name = "6-Phosphogluconate dehydrogenase"
+# 6PGC (C1-C2-C3-C4-C5-C6) -> RU5P (C2-C3-C4-C5-C6) + CO2 (C1)
+substrates = {"6pgc" = [{0 = 0, 1 = 1, 2 = 2, 3 = 3, 4 = 4, 5 = 5}]}
+products = {ru5p__D = [{0 = 1, 1 = 2, 2 = 3, 3 = 4, 4 = 5}], co2 = [{0 = 0}]}
+reversible = true
+
+[reactions.RPI]
+name = "Ribose-5-phosphate isomerase"
+equation = "ru5p__D -> r5p"
+atom_mapping = "abcde -> abcde"
+reversible = true
+
+[reactions.RPE]
+name = "Ribulose-5-phosphate epimerase"
+equation = "ru5p__D -> xu5p__D"
+atom_mapping = "abcde -> abcde"
+reversible = true
+
+[reactions.r5p_drain]
+name = "Ribose-5-phosphate drain"
+equation = "r5p -> r5p_e"
+atom_mapping = "abcde -> abcde"
+reversible = true
+
+[reactions.TKTL1]
+name = "Transketolase 1"
+# R5P + XU5P -> S7P + G3P
+# XU5P (donor) transfers C1-C2 to R5P (acceptor)
+# S7P = XU5P(C1-C2) + R5P(all), G3P = XU5P(C3-C4-C5)
+substrates = {r5p = [{0 = 0, 1 = 1, 2 = 2, 3 = 3, 4 = 4}], xu5p__D = [{0 = 5, 1 = 6, 2 = 7, 3 = 8, 4 = 9}]}
+products = {s7p = [{0 = 5, 1 = 6, 2 = 0, 3 = 1, 4 = 2, 5 = 3, 6 = 4}], g3p = [{0 = 7, 1 = 8, 2 = 9}]}
+reversible = true
+
+[reactions.TKTL2]
+name = "Transketolase 2"
+# XU5P + E4P -> F6P + G3P
+# Transfers C1-C2 from XU5P to E4P
+substrates = {xu5p__D = [{0 = 0, 1 = 1, 2 = 2, 3 = 3, 4 = 4}], e4p = [{0 = 5, 1 = 6, 2 = 7, 3 = 8}]}
+products = {f6p = [{0 = 0, 1 = 1, 2 = 5, 3 = 6, 4 = 7, 5 = 8}], g3p = [{0 = 2, 1 = 3, 2 = 4}]}
+reversible = true
+
+[reactions.TALA]
+name = "Transaldolase"
+# S7P + G3P -> E4P + F6P
+# Transfers C1-C2-C3 from S7P to G3P
+substrates = {s7p = [{0 = 0, 1 = 1, 2 = 2, 3 = 3, 4 = 4, 5 = 5, 6 = 6}], g3p = [{0 = 7, 1 = 8, 2 = 9}]}
+products = {e4p = [{0 = 3, 1 = 4, 2 = 5, 3 = 6}], f6p = [{0 = 0, 1 = 1, 2 = 2, 3 = 7, 4 = 8, 5 = 9}]}
+reversible = true
+
+# ============================================================================
+# Validation
+# ============================================================================
+
+[validation]
+carbon_balanced = true
+check_atom_mapping = true
+allow_loops = false

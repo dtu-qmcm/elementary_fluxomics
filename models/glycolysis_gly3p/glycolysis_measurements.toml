@@ -1,0 +1,111 @@
+[metadata]
+description = "Glycolysis labeling measurements"
+measurement_type = "MS"
+includes_error = true
+
+# ============================================================================
+# Measurement Protocol
+# ============================================================================
+
+[protocol]
+replicates = 3
+randomize_order = false
+blank_correction = true
+internal_standard = "none"
+
+# ============================================================================
+# Measurements
+# ============================================================================
+
+# Measure key glycolytic intermediates
+[[measurements]]
+name = "G6P_full"
+metabolite = "g6p"
+atoms = [0, 1, 2, 3, 4, 5]
+timepoints = [0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 100.0]
+error_absolute = 0.01
+error_relative = 0.02
+notes = "Glucose 6-phosphate - all 6 carbons"
+
+[[measurements]]
+name = "F6P_full"
+metabolite = "f6p"
+atoms = [0, 1, 2, 3, 4, 5]
+timepoints = [0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 100.0]
+error_absolute = 0.01
+error_relative = 0.02
+notes = "Fructose 6-phosphate - all 6 carbons"
+
+[[measurements]]
+name = "DHAP_full"
+metabolite = "dhap"
+atoms = [0, 1, 2]
+timepoints = [0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 100.0]
+error_absolute = 0.01
+error_relative = 0.02
+notes = "Dihydroxyacetone phosphate - all 3 carbons"
+
+[[measurements]]
+name = "G3P_full"
+metabolite = "g3p"
+atoms = [0, 1, 2]
+timepoints = [0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 100.0]
+error_absolute = 0.01
+error_relative = 0.02
+notes = "Glyceraldehyde 3-phosphate - all 3 carbons"
+
+[[measurements]]
+name = "PYR_full"
+metabolite = "pyr"
+atoms = [0, 1, 2]
+timepoints = [0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 100.0]
+error_absolute = 0.01
+error_relative = 0.02
+notes = "Pyruvate - all 3 carbons"
+
+[[measurements]]
+name = "LAC_full"
+metabolite = "lac"
+atoms = [0, 1, 2]
+timepoints = [0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 100.0]
+error_absolute = 0.01
+error_relative = 0.02
+notes = "Lactate - all 3 carbons"
+
+# Pentose phosphate pathway metabolites
+[[measurements]]
+name = "6PGC_full"
+metabolite = "6pgc"
+atoms = [0, 1, 2, 3, 4, 5]
+timepoints = [0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 100.0]
+error_absolute = 0.01
+error_relative = 0.02
+notes = "6-Phosphogluconate - all 6 carbons"
+
+[[measurements]]
+name = "R5P_full"
+metabolite = "r5p"
+atoms = [0, 1, 2, 3, 4]
+timepoints = [0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 100.0]
+error_absolute = 0.01
+error_relative = 0.02
+notes = "Ribose 5-phosphate - all 5 carbons"
+
+# Fragment measurements for pathway resolution
+[[measurements]]
+name = "PYR_C12"
+metabolite = "pyr"
+atoms = [0, 1]
+timepoints = [0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 100.0]
+error_absolute = 0.01
+error_relative = 0.02
+notes = "Pyruvate fragment - C1 and C2"
+
+[[measurements]]
+name = "PYR_C3"
+metabolite = "pyr"
+atoms = [2]
+timepoints = [0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 100.0]
+error_absolute = 0.01
+error_relative = 0.02
+notes = "Pyruvate fragment - C3"

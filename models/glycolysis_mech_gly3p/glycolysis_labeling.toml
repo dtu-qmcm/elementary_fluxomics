@@ -1,0 +1,76 @@
+[metadata]
+description = "1,2-13C D-Glucose labeling experiment"
+tracer_element = "carbon"
+isotope = "13C"
+
+# ============================================================================
+# Substrate Labeling
+# ============================================================================
+
+[substrates.glc__D_e]
+metabolite = "glc__D_e"
+type = "positional"
+n_atoms = 6
+# 1,2-13C glucose: positions 0 and 1 are labeled at 100%
+enrichment = [1.0, 1.0, 0.0, 0.0, 0.0, 0.0]
+
+[substrates.gly3p]
+metabolite = "gly3p"
+type = "positional"
+n_atoms = 3
+# Unlabeled glycerol-3-phosphate sink
+enrichment = [0.0, 0.0, 0.0]
+
+
+[substrates.pyr_e]
+metabolite = "pyr_e"
+type = "positional"
+n_atoms = 3
+# Unlabeled external pyruvate
+enrichment = [0.0, 0.0, 0.0]
+
+
+[substrates.lac]
+metabolite = "lac"
+type = "positional"
+n_atoms = 3
+# Unlabeled lactate sink
+enrichment = [0.0, 0.0, 0.0]
+
+# ============================================================================
+# Initial Conditions (all unlabeled at t=0)
+# ============================================================================
+
+[initial_conditions]
+g6p = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+f6p = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+fdp = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+dhap = [0.0, 0.0, 0.0]
+g3p = [0.0, 0.0, 0.0]
+"3pg" = [0.0, 0.0, 0.0]
+pep = [0.0, 0.0, 0.0]
+pyr = [0.0, 0.0, 0.0]
+lac = [0.0, 0.0, 0.0]
+"6pgc" = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+ru5p__D = [0.0, 0.0, 0.0, 0.0, 0.0]
+r5p = [0.0, 0.0, 0.0, 0.0, 0.0]
+xu5p__D = [0.0, 0.0, 0.0, 0.0, 0.0]
+s7p = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+e4p = [0.0, 0.0, 0.0, 0.0]
+
+# ============================================================================
+# Experiment Parameters
+# ============================================================================
+
+[experiment]
+start_time = 0.0
+labeling_switch_time = 0.0
+washout_time = -1.0
+
+# ============================================================================
+# Validation
+# ============================================================================
+
+[validation]
+check_enrichment_bounds = true
+check_mdv_normalization = true
