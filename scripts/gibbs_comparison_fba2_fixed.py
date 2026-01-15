@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""1D Chi-squared Comparison: FBA2 Fixed, FBA1 Variable.
+"""1D Negative Log-Likelihood Comparison: FBA2 Fixed, FBA1 Variable.
 
 This script compares mechanistic model configurations where FBA2 is held constant
 at -2.0 kJ/mol while FBA1 varies from -1.0 to -5.0 kJ/mol.
@@ -8,13 +8,16 @@ Reference (fixed): FBA1=-3.0, FBA2=-2.0 kJ/mol
 Variable: FBA1 from -1.0 to -5.0 kJ/mol (FBA2 constant at -2.0)
 
 Outputs:
-- Aggregated SSR vs FBA1 parameter plot
-- Timecourse chi-squared (aggregated and per-metabolite)
+- Aggregated NLL vs FBA1 parameter plot (timecourse and final)
+- Timecourse NLL (aggregated and per-metabolite)
 """
 
 from pathlib import Path
 import sys
 
+import cmcrameri.cm as cmc
+import jax.numpy as jnp
+import jax.scipy.stats as jstats
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -55,7 +58,7 @@ EMU_TO_METABOLITE = {
 }
 
 # Log-normal error scale (standard deviation of log-transformed values)
-LOGNORMAL_SCALE = 0.01
+LOGNORMAL_SCALE = 0.05
 
 # Small epsilon to avoid log(0)
 EPSILON = 1e-10
@@ -163,14 +166,13 @@ def run_simulation(thermo_overrides=None):
         return mdvs
 
 
-def calculate_chisquared_at_timepoint(mdvs_ref, mdvs_test, timepoint, scale):
-    """Calculate chi-squared at a single timepoint with per-metabolite breakdown.
+def compute_nll_at_timepoint(mdvs_ref, mdvs_test, timepoint, scale):
+    """Compute negative log-likelihood at a single timepoint with per-metabolite breakdown.
 
-    Uses log-normal distribution: sum((log(test) - log(ref))^2 / scale^2)
+    Uses jax.scipy.stats.norm.logpdf on log-transformed values.
     """
-    total_chi_squared = 0.0
+    total_nll = 0.0
     per_metabolite = {}
-    variance = scale**2
 
     for emu_id in mdvs_ref:
         if emu_id not in mdvs_test:
@@ -188,24 +190,24 @@ def calculate_chisquared_at_timepoint(mdvs_ref, mdvs_test, timepoint, scale):
         if np.sum(mdv_test) > 0:
             mdv_test = mdv_test / np.sum(mdv_test)
 
-        # Log-normal error
-        log_ref = np.log(mdv_ref + EPSILON)
-        log_test = np.log(mdv_test + EPSILON)
-        chi_sq = float(np.sum((log_test - log_ref) ** 2 / variance))
+        # Negative log-likelihood using JAX norm.logpdf
+        log_ref = jnp.log(jnp.array(mdv_ref) + EPSILON)
+        log_test = jnp.log(jnp.array(mdv_test) + EPSILON)
+        nll = -float(jnp.sum(jstats.norm.logpdf(log_test, loc=log_ref, scale=scale)))
+
         met_name = EMU_TO_METABOLITE.get(emu_id, emu_id.split("_")[0])
-        per_metabolite[met_name] = chi_sq
-        total_chi_squared += chi_sq
+        per_metabolite[met_name] = nll
+        total_nll += nll
 
-    return total_chi_squared, per_metabolite
+    return total_nll, per_metabolite
 
 
-def compute_normalized_ssr(mdvs_ref, mdvs_test, scale, exclude_timepoint=None):
-    """Compute normalized SSR between two sets of MDVs using log-normal error.
+def compute_nll(mdvs_ref, mdvs_test, scale, exclude_timepoint=None):
+    """Compute negative log-likelihood between two sets of MDVs using log-normal error.
 
-    Uses log-normal distribution: sum((log(test) - log(ref))^2 / scale^2)
+    Uses jax.scipy.stats.norm.logpdf on log-transformed values.
     """
-    ssr = 0.0
-    variance = scale**2
+    total_nll = 0.0
 
     for emu_id in mdvs_ref:
         if emu_id not in mdvs_test:
@@ -226,18 +228,19 @@ def compute_normalized_ssr(mdvs_ref, mdvs_test, scale, exclude_timepoint=None):
             if np.sum(mdv_test) > 0:
                 mdv_test = mdv_test / np.sum(mdv_test)
 
-            # Log-normal error
-            log_ref = np.log(mdv_ref + EPSILON)
-            log_test = np.log(mdv_test + EPSILON)
-            ssr += np.sum((log_test - log_ref) ** 2 / variance)
+            # Negative log-likelihood using JAX norm.logpdf
+            log_ref = jnp.log(jnp.array(mdv_ref) + EPSILON)
+            log_test = jnp.log(jnp.array(mdv_test) + EPSILON)
+            ll = jnp.sum(jstats.norm.logpdf(log_test, loc=log_ref, scale=scale))
+            total_nll -= float(ll)
 
-    return ssr
+    return total_nll
 
 
 def run_1d_scan(dG_values):
     """Run 1D scan over FBA1 Gibbs energy with FBA2 fixed.
 
-    Returns both aggregated SSR results and timecourse data.
+    Returns both aggregated NLL results and timecourse data.
     """
     print(f"Running reference model (FBA1={REFERENCE_FBA1}, FBA2={REFERENCE_FBA2})...")
     sys.stdout.flush()
@@ -260,35 +263,40 @@ def run_1d_scan(dG_values):
 
         try:
             mdvs_test = run_simulation(thermo_overrides)
-            ssr = compute_normalized_ssr(
+            nll_timecourse = compute_nll(
                 mdvs_ref, mdvs_test, LOGNORMAL_SCALE, exclude_timepoint=FINAL_TIMEPOINT
             )
+            nll_final, _ = compute_nll_at_timepoint(
+                mdvs_ref, mdvs_test, FINAL_TIMEPOINT, LOGNORMAL_SCALE
+            )
 
-            # Calculate timecourse chi-squared
+            # Calculate per-timepoint, per-metabolite NLL
             for t in filtered_timepoints:
-                total_chi_sq, per_met = calculate_chisquared_at_timepoint(
+                total_nll, per_met = compute_nll_at_timepoint(
                     mdvs_ref, mdvs_test, t, LOGNORMAL_SCALE
                 )
                 row = {
                     "FBA1_deltaG": dG,
                     "FBA2_deltaG": FIXED_FBA2,
                     "timepoint": t,
-                    "chi_squared_total": total_chi_sq,
+                    "nll_total": total_nll,
                 }
-                for met_id, chi_sq in per_met.items():
-                    row[f"chi_squared_{met_id}"] = chi_sq
+                for met_id, nll in per_met.items():
+                    row[f"nll_{met_id}"] = nll
                 timecourse_results.append(row)
 
         except Exception as e:
             print(f"    Error: {e}")
             sys.stdout.flush()
-            ssr = np.nan
+            nll_timecourse = np.nan
+            nll_final = np.nan
 
         aggregated_results.append(
             {
                 "FBA1_deltaG": dG,
                 "FBA2_deltaG": FIXED_FBA2,
-                "SSR": ssr,
+                "nll_timecourse": nll_timecourse,
+                "nll_final": nll_final,
             }
         )
 
@@ -296,24 +304,59 @@ def run_1d_scan(dG_values):
 
 
 def plot_comparison(df, output_path):
-    """Plot 1D SSR comparison."""
+    """Plot 1D NLL comparison for timecourse."""
     fig, ax = plt.subplots(figsize=(10, 6))
 
+    color = cmc.batlow(0.3)
     ax.plot(
-        df["FBA1_deltaG"], df["SSR"], "o-", linewidth=2, markersize=6, color="steelblue"
+        df["FBA1_deltaG"], df["nll_timecourse"], "o-", linewidth=2, markersize=6, color=color
     )
 
     # Mark reference FBA1 value
     ax.axvline(
         x=REFERENCE_FBA1,
-        color="red",
+        color=cmc.batlow(0.85),
         linestyle="--",
         linewidth=1.5,
         label=f"Reference FBA1={REFERENCE_FBA1}",
     )
 
     ax.set_xlabel(f"FBA1 dG (kJ/mol) [FBA2 fixed at {FIXED_FBA2}]", fontsize=12)
-    ax.set_ylabel("Normalized SSR", fontsize=12)
+    ax.set_ylabel("Negative Log-Likelihood (Timecourse)", fontsize=12)
+
+    ax.legend(loc="best")
+    ax.grid(True, alpha=0.3)
+    ax.invert_xaxis()
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    print(f"  Saved: {output_path}")
+    sys.stdout.flush()
+
+    plt.close()
+
+
+def plot_final_timepoint(df, output_path):
+    """Plot 1D NLL comparison for final timepoint."""
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    color = cmc.batlow(0.6)
+    ax.plot(
+        df["FBA1_deltaG"], df["nll_final"], "s-", linewidth=2, markersize=6, color=color,
+        label=f"Final timepoint NLL (t={FINAL_TIMEPOINT:.0f}s)",
+    )
+
+    # Mark reference FBA1 value
+    ax.axvline(
+        x=REFERENCE_FBA1,
+        color=cmc.batlow(0.85),
+        linestyle="--",
+        linewidth=1.5,
+        label=f"Reference FBA1={REFERENCE_FBA1}",
+    )
+
+    ax.set_xlabel(f"FBA1 dG (kJ/mol) [FBA2 fixed at {FIXED_FBA2}]", fontsize=12)
+    ax.set_ylabel("Negative Log-Likelihood (Final Timepoint)", fontsize=12)
 
     ax.legend(loc="best")
     ax.grid(True, alpha=0.3)
@@ -328,12 +371,12 @@ def plot_comparison(df, output_path):
 
 
 def plot_timecourse_aggregated(df, output_path):
-    """Plot aggregated chi-squared timecourse for all test conditions."""
-    fig, ax = plt.subplots(figsize=(10, 6))
+    """Plot aggregated NLL timecourse for all test conditions."""
+    fig, ax = plt.subplots(figsize=(12, 7))
 
     # Get unique FBA1 values
     fba1_values = sorted(df["FBA1_deltaG"].unique())
-    colors = plt.cm.viridis(np.linspace(0, 1, len(fba1_values)))
+    colors = [cmc.batlow(i / len(fba1_values)) for i in range(len(fba1_values))]
 
     for idx, fba1 in enumerate(fba1_values):
         condition_data = df[df["FBA1_deltaG"] == fba1].sort_values("timepoint")
@@ -342,17 +385,18 @@ def plot_timecourse_aggregated(df, output_path):
             label += " (ref)"
         ax.plot(
             condition_data["timepoint"],
-            condition_data["chi_squared_total"],
-            linewidth=2,
+            condition_data["nll_total"],
+            linewidth=1.5,
             color=colors[idx],
             label=label,
         )
 
     ax.set_xlabel("Time (s)", fontsize=12)
-    ax.set_ylabel("Chi-Squared (total)", fontsize=12)
+    ax.set_ylabel("Negative Log-Likelihood (Total)", fontsize=12)
+    ax.set_title("NLL Over Time: FBA2 Fixed, FBA1 Variable", fontsize=14)
     ax.set_xscale("log")
     ax.grid(True, alpha=0.3)
-    ax.legend(fontsize=9, loc="best", ncol=2)
+    ax.legend(fontsize=8, loc="best", ncol=2)
 
     plt.tight_layout()
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
@@ -363,53 +407,43 @@ def plot_timecourse_aggregated(df, output_path):
 
 
 def plot_timecourse_per_metabolite(df, output_path):
-    """Plot per-metabolite chi-squared timecourse in subplots."""
+    """Plot per-metabolite NLL timecourse in subplots."""
+    metabolites = ["g6p", "f6p", "dhap", "g3p"]
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    axes = axes.flatten()
+
     fba1_values = sorted(df["FBA1_deltaG"].unique())
-    n_conditions = len(fba1_values)
+    colors = [cmc.batlow(i / len(fba1_values)) for i in range(len(fba1_values))]
 
-    # Determine grid size
-    ncols = 4
-    nrows = (n_conditions + ncols - 1) // ncols
+    for ax, met_id in zip(axes, metabolites):
+        col_name = f"nll_{met_id}"
+        if col_name not in df.columns:
+            ax.set_visible(False)
+            continue
 
-    fig, axes = plt.subplots(nrows, ncols, figsize=(16, 4 * nrows))
-    axes = axes.flatten() if n_conditions > 1 else [axes]
+        for idx, fba1 in enumerate(fba1_values):
+            condition_data = df[df["FBA1_deltaG"] == fba1].sort_values("timepoint")
+            label = f"FBA1={fba1:.1f}"
+            ax.plot(
+                condition_data["timepoint"],
+                condition_data[col_name],
+                "-",
+                color=colors[idx],
+                linewidth=1.5,
+                label=label,
+            )
 
-    metabolite_colors = {
-        "g6p": "C0",
-        "f6p": "C1",
-        "dhap": "C2",
-        "g3p": "C3",
-    }
-
-    for idx, fba1 in enumerate(fba1_values):
-        ax = axes[idx]
-        condition_data = df[df["FBA1_deltaG"] == fba1].sort_values("timepoint")
-
-        for met_id, color in metabolite_colors.items():
-            col_name = f"chi_squared_{met_id}"
-            if col_name in condition_data.columns:
-                ax.plot(
-                    condition_data["timepoint"],
-                    condition_data[col_name],
-                    linewidth=1.5,
-                    color=color,
-                    label=met_id,
-                )
-
-        ax.set_xlabel("Time (s)", fontsize=10)
-        ax.set_ylabel("Chi-Squared", fontsize=10)
-        title = f"FBA1={fba1:.2f} kJ/mol"
-        if abs(fba1 - REFERENCE_FBA1) < 0.1:
-            title += " (ref)"
-        ax.set_title(title, fontsize=11)
         ax.set_xscale("log")
+        ax.set_xlabel("Time (s)", fontsize=10)
+        ax.set_ylabel("Negative Log-Likelihood", fontsize=10)
+        ax.set_title(f"{met_id.upper()}", fontsize=12)
         ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=8, loc="best")
 
-    # Hide unused subplots
-    for idx in range(n_conditions, len(axes)):
-        axes[idx].set_visible(False)
+    # Add legend to figure
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="center right", fontsize=8, bbox_to_anchor=(1.02, 0.5))
 
+    plt.suptitle("Per-Metabolite NLL Over Time (FBA2 Fixed)", fontsize=14, y=1.02)
     plt.tight_layout()
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     print(f"  Saved: {output_path}")
@@ -421,7 +455,7 @@ def plot_timecourse_per_metabolite(df, output_path):
 def main():
     """Run 1D comparison analysis with FBA2 fixed."""
     print("=" * 80)
-    print("1D Normalized SSR Comparison: FBA2 Fixed, FBA1 Variable")
+    print("1D Negative Log-Likelihood Comparison: FBA2 Fixed, FBA1 Variable")
     print("=" * 80)
     sys.stdout.flush()
 
@@ -454,15 +488,20 @@ def main():
     df_agg.to_csv(csv_path, index=False)
     print(f"  Saved CSV: {csv_path}")
 
-    timecourse_csv_path = output_dir / "timecourse_chisquared.csv"
+    timecourse_csv_path = output_dir / "timecourse_nll.csv"
     df_timecourse.to_csv(timecourse_csv_path, index=False)
     print(f"  Saved CSV: {timecourse_csv_path}")
     sys.stdout.flush()
 
-    # Plot aggregated SSR
-    print("\n  Creating comparison plot...")
+    # Plot timecourse NLL comparison
+    print("\n  Creating timecourse comparison plot...")
     sys.stdout.flush()
     plot_comparison(df_agg, output_dir / "gibbs_comparison_fba2_fixed.png")
+
+    # Plot final timepoint NLL comparison
+    print("  Creating final timepoint comparison plot...")
+    sys.stdout.flush()
+    plot_final_timepoint(df_agg, output_dir / "gibbs_comparison_fba2_fixed_final.png")
 
     # Plot timecourse
     print("  Creating timecourse plots...")
@@ -470,27 +509,37 @@ def main():
     plot_timecourse_aggregated(df_timecourse, output_dir / "timecourse_aggregated.png")
     plot_timecourse_per_metabolite(df_timecourse, output_dir / "timecourse_per_metabolite.png")
 
-    # Summary
-    min_idx = df_agg["SSR"].idxmin()
+    # Summary (lower NLL is better)
+    min_idx_tc = df_agg["nll_timecourse"].idxmin()
+    min_idx_final = df_agg["nll_final"].idxmin()
     print("\n" + "=" * 80)
     print("Analysis Complete!")
     print("=" * 80)
-    print(f"\nSummary:")
+    print(f"\nTimecourse Summary (1e-3s to 10s):")
     print(
-        f"  Min SSR: {df_agg['SSR'].min():.6f} at FBA1={df_agg.loc[min_idx, 'FBA1_deltaG']:.2f} kJ/mol"
+        f"  Min NLL: {df_agg['nll_timecourse'].min():.2f} at FBA1={df_agg.loc[min_idx_tc, 'FBA1_deltaG']:.2f} kJ/mol"
     )
-    print(f"  Max SSR: {df_agg['SSR'].max():.6f}")
+    print(f"  Max NLL: {df_agg['nll_timecourse'].max():.2f}")
 
-    # Find SSR at reference FBA1
+    print(f"\nFinal Timepoint Summary (t={FINAL_TIMEPOINT:.0f}s):")
+    print(
+        f"  Min NLL: {df_agg['nll_final'].min():.2f} at FBA1={df_agg.loc[min_idx_final, 'FBA1_deltaG']:.2f} kJ/mol"
+    )
+    print(f"  Max NLL: {df_agg['nll_final'].max():.2f}")
+
+    # Find NLL at reference FBA1
     closest_to_ref = df_agg.iloc[
         (df_agg["FBA1_deltaG"] - REFERENCE_FBA1).abs().argsort()[:1]
     ]
-    print(f"  SSR at reference FBA1={REFERENCE_FBA1}: {closest_to_ref['SSR'].values[0]:.6f}")
+    print(f"\nNLL at reference FBA1={REFERENCE_FBA1}:")
+    print(f"  Timecourse: {closest_to_ref['nll_timecourse'].values[0]:.2f}")
+    print(f"  Final: {closest_to_ref['nll_final'].values[0]:.2f}")
 
     print(f"\nGenerated files in: {output_dir}")
     print("  - gibbs_comparison_fba2_fixed.csv")
-    print("  - gibbs_comparison_fba2_fixed.png")
-    print("  - timecourse_chisquared.csv")
+    print("  - gibbs_comparison_fba2_fixed.png (timecourse)")
+    print("  - gibbs_comparison_fba2_fixed_final.png (final timepoint)")
+    print("  - timecourse_nll.csv")
     print("  - timecourse_aggregated.png")
     print("  - timecourse_per_metabolite.png")
     sys.stdout.flush()

@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
-"""2D Gibbs Energy Landscape Analysis - Normalized SSR.
+"""2D Gibbs Energy Landscape Analysis - Negative Log-Likelihood.
 
 This script scans a 2D grid of Gibbs energies for FBA1 and FBA2 reactions,
-calculating normalized sum of squared residuals (SSR) against a reference condition.
+calculating negative log-likelihood against a reference condition.
 
 Outputs:
-- Normalized SSR over the full timecourse (integrated across all timepoints)
-- Normalized SSR at the final timepoint only
+- NLL over the full timecourse (integrated across all timepoints)
+- NLL at the final timepoint only
 """
 
 from pathlib import Path
 import sys
 
 import cmcrameri.cm as cmc
+import jax.numpy as jnp
+import jax.scipy.stats as jstats
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -58,7 +60,7 @@ DG1_VALUES = np.linspace(-1, -4, 30)  # 30 points from -1 to -4
 DG2_VALUES = np.linspace(-1, -4, 30)  # 30 points from -1 to -4
 
 # Log-normal error scale (standard deviation of log-transformed values)
-LOGNORMAL_SCALE = 0.01
+LOGNORMAL_SCALE = 0.05
 
 # Small epsilon to avoid log(0)
 EPSILON = 1e-10
@@ -182,12 +184,10 @@ def run_simulation(gibbs_overrides, timepoints):
         return mdvs
 
 
-def compute_normalized_ssr(mdvs_ref, mdvs_test, scale, exclude_timepoint=None):
-    """Compute normalized SSR between two sets of MDVs using log-normal error.
+def compute_nll(mdvs_ref, mdvs_test, scale, exclude_timepoint=None):
+    """Compute negative log-likelihood between two sets of MDVs using log-normal error.
 
-    SSR = sum((log(test) - log(ref))^2 / scale^2)
-
-    This sums the chi-squared contributions across all metabolites and timepoints.
+    Uses jax.scipy.stats.norm.logpdf on log-transformed values.
 
     Args:
         mdvs_ref: Reference MDV values {emu_id: {timepoint: mdv_array}}
@@ -196,10 +196,9 @@ def compute_normalized_ssr(mdvs_ref, mdvs_test, scale, exclude_timepoint=None):
         exclude_timepoint: Optional timepoint to exclude from calculation
 
     Returns:
-        Total normalized SSR (sum of chi-squared contributions)
+        Total negative log-likelihood
     """
-    ssr = 0.0
-    variance = scale**2
+    total_nll = 0.0
 
     for emu_id in mdvs_ref:
         if emu_id not in mdvs_test:
@@ -221,16 +220,17 @@ def compute_normalized_ssr(mdvs_ref, mdvs_test, scale, exclude_timepoint=None):
             if np.sum(mdv_test) > 0:
                 mdv_test = mdv_test / np.sum(mdv_test)
 
-            # Log-normal SSR contribution
-            log_ref = np.log(mdv_ref + EPSILON)
-            log_test = np.log(mdv_test + EPSILON)
-            ssr += np.sum((log_test - log_ref) ** 2 / variance)
+            # Negative log-likelihood using JAX norm.logpdf
+            log_ref = jnp.log(jnp.array(mdv_ref) + EPSILON)
+            log_test = jnp.log(jnp.array(mdv_test) + EPSILON)
+            ll = jnp.sum(jstats.norm.logpdf(log_test, loc=log_ref, scale=scale))
+            total_nll -= float(ll)
 
-    return ssr
+    return total_nll
 
 
-def compute_normalized_ssr_final_timepoint(mdvs_ref, mdvs_test, scale):
-    """Compute normalized SSR at the final timepoint using log-normal error.
+def compute_nll_final_timepoint(mdvs_ref, mdvs_test, scale):
+    """Compute negative log-likelihood at the final timepoint using log-normal error.
 
     Args:
         mdvs_ref: Reference MDV values {emu_id: {timepoint: mdv_array}}
@@ -238,10 +238,9 @@ def compute_normalized_ssr_final_timepoint(mdvs_ref, mdvs_test, scale):
         scale: Log-normal scale parameter
 
     Returns:
-        Total normalized SSR at final timepoint (sum of chi-squared contributions)
+        Total negative log-likelihood at final timepoint
     """
-    ssr = 0.0
-    variance = scale**2
+    total_nll = 0.0
 
     for emu_id in mdvs_ref:
         if emu_id not in mdvs_test:
@@ -268,12 +267,13 @@ def compute_normalized_ssr_final_timepoint(mdvs_ref, mdvs_test, scale):
         if np.sum(mdv_test) > 0:
             mdv_test = mdv_test / np.sum(mdv_test)
 
-        # Log-normal SSR contribution
-        log_ref = np.log(mdv_ref + EPSILON)
-        log_test = np.log(mdv_test + EPSILON)
-        ssr += np.sum((log_test - log_ref) ** 2 / variance)
+        # Negative log-likelihood using JAX norm.logpdf
+        log_ref = jnp.log(jnp.array(mdv_ref) + EPSILON)
+        log_test = jnp.log(jnp.array(mdv_test) + EPSILON)
+        ll = jnp.sum(jstats.norm.logpdf(log_test, loc=log_ref, scale=scale))
+        total_nll -= float(ll)
 
-    return ssr
+    return total_nll
 
 
 def run_2d_scan(dG1_values, dG2_values, timepoints):
@@ -282,13 +282,24 @@ def run_2d_scan(dG1_values, dG2_values, timepoints):
     Compares each point against the reference condition.
 
     Returns:
-        DataFrame with columns: FBA1_deltaG, FBA2_deltaG, SSR_timecourse, SSR_final
+        DataFrame with columns: FBA1_deltaG, FBA2_deltaG, nll_timecourse, nll_final
+        and dict with reference NLL values
     """
     print(f"Running reference simulation (FBA1={REFERENCE_FBA1}, FBA2={REFERENCE_FBA2})...")
     sys.stdout.flush()
 
     ref_overrides = {"FBA1": REFERENCE_FBA1, "FBA2": REFERENCE_FBA2}
     mdvs_ref = run_simulation(ref_overrides, timepoints)
+
+    # Compute reference NLL (reference vs itself)
+    print("Computing reference NLL (reference vs itself)...")
+    sys.stdout.flush()
+    ref_nll_timecourse = compute_nll(
+        mdvs_ref, mdvs_ref, LOGNORMAL_SCALE, exclude_timepoint=FINAL_TIMEPOINT
+    )
+    ref_nll_final = compute_nll_final_timepoint(mdvs_ref, mdvs_ref, LOGNORMAL_SCALE)
+    ref_nll = {"timecourse": ref_nll_timecourse, "final": ref_nll_final}
+    print(f"  Reference NLL - Timecourse: {ref_nll_timecourse:.2f}, Final: {ref_nll_final:.2f}")
 
     results = []
     total = len(dG1_values) * len(dG2_values)
@@ -305,34 +316,36 @@ def run_2d_scan(dG1_values, dG2_values, timepoints):
             try:
                 mdvs_test = run_simulation(thermo_overrides, timepoints)
 
-                # Calculate normalized SSR over full timecourse
-                ssr_timecourse = compute_normalized_ssr(mdvs_ref, mdvs_test, LOGNORMAL_SCALE, exclude_timepoint=FINAL_TIMEPOINT)
+                # Calculate NLL over full timecourse
+                nll_timecourse = compute_nll(
+                    mdvs_ref, mdvs_test, LOGNORMAL_SCALE, exclude_timepoint=FINAL_TIMEPOINT
+                )
 
-                # Calculate normalized SSR at final timepoint
-                ssr_final = compute_normalized_ssr_final_timepoint(
+                # Calculate NLL at final timepoint
+                nll_final = compute_nll_final_timepoint(
                     mdvs_ref, mdvs_test, LOGNORMAL_SCALE
                 )
 
             except Exception as e:
                 print(f"    Error: {e}")
                 sys.stdout.flush()
-                ssr_timecourse = np.nan
-                ssr_final = np.nan
+                nll_timecourse = np.nan
+                nll_final = np.nan
 
             results.append(
                 {
                     "FBA1_deltaG": dG1,
                     "FBA2_deltaG": dG2,
-                    "SSR_timecourse": ssr_timecourse,
-                    "SSR_final": ssr_final,
+                    "nll_timecourse": nll_timecourse,
+                    "nll_final": nll_final,
                 }
             )
 
-    return pd.DataFrame(results)
+    return pd.DataFrame(results), ref_nll
 
 
 def plot_landscape(df, value_col, title_suffix, output_path):
-    """Plot 2D SSR landscape as heatmap."""
+    """Plot 2D NLL landscape as heatmap."""
     # Pivot for heatmap (FBA2 on x-axis, FBA1 on y-axis)
     pivot = df.pivot(index="FBA1_deltaG", columns="FBA2_deltaG", values=value_col)
 
@@ -369,7 +382,7 @@ def plot_landscape(df, value_col, title_suffix, output_path):
     ax.invert_xaxis()
     ax.invert_yaxis()
 
-    cbar = plt.colorbar(im, ax=ax, label="Normalized SSR")
+    cbar = plt.colorbar(im, ax=ax, label="Negative Log-Likelihood")
     ax.legend(loc="lower left")
 
     plt.tight_layout()
@@ -388,7 +401,7 @@ def plot_landscape(df, value_col, title_suffix, output_path):
 def main():
     """Run 2D Gibbs energy landscape analysis."""
     print("=" * 80)
-    print("2D Gibbs Energy Landscape - Normalized SSR Analysis")
+    print("2D Gibbs Energy Landscape - Negative Log-Likelihood Analysis")
     print("=" * 80)
     sys.stdout.flush()
 
@@ -411,7 +424,7 @@ def main():
     print("=" * 80)
     sys.stdout.flush()
 
-    df = run_2d_scan(DG1_VALUES, DG2_VALUES, filtered_timepoints)
+    df, ref_nll = run_2d_scan(DG1_VALUES, DG2_VALUES, filtered_timepoints)
 
     # Save results
     print("\n" + "=" * 80)
@@ -424,22 +437,22 @@ def main():
     print(f"  Saved CSV: {csv_path}")
     sys.stdout.flush()
 
-    # Plot timecourse SSR landscape
-    print("\n  Creating timecourse SSR landscape plot...")
+    # Plot timecourse NLL landscape
+    print("\n  Creating timecourse NLL landscape plot...")
     sys.stdout.flush()
     plot_landscape(
         df,
-        "SSR_timecourse",
+        "nll_timecourse",
         "(Full Timecourse)",
         output_dir / "gibbs_landscape_2d_timecourse.png",
     )
 
-    # Plot final timepoint SSR landscape
-    print("  Creating final timepoint SSR landscape plot...")
+    # Plot final timepoint NLL landscape
+    print("  Creating final timepoint NLL landscape plot...")
     sys.stdout.flush()
     plot_landscape(
         df,
-        "SSR_final",
+        "nll_final",
         "(Final Timepoint Only)",
         output_dir / "gibbs_landscape_2d_final.png",
     )
@@ -449,21 +462,25 @@ def main():
     print("Analysis Complete!")
     print("=" * 80)
 
-    print("\nTimecourse SSR Summary:")
-    min_idx = df["SSR_timecourse"].idxmin()
-    print(
-        f"  Min: {df['SSR_timecourse'].min():.6f} at "
-        f"FBA1={df.loc[min_idx, 'FBA1_deltaG']:.2f}, FBA2={df.loc[min_idx, 'FBA2_deltaG']:.2f}"
-    )
-    print(f"  Max: {df['SSR_timecourse'].max():.6f}")
+    print(f"\nReference NLL (reference vs itself):")
+    print(f"  Timecourse: {ref_nll['timecourse']:.2f}")
+    print(f"  Final: {ref_nll['final']:.2f}")
 
-    print("\nFinal Timepoint SSR Summary:")
-    min_idx = df["SSR_final"].idxmin()
+    print("\nTimecourse NLL Summary:")
+    min_idx = df["nll_timecourse"].idxmin()
     print(
-        f"  Min: {df['SSR_final'].min():.6f} at "
+        f"  Min: {df['nll_timecourse'].min():.2f} at "
         f"FBA1={df.loc[min_idx, 'FBA1_deltaG']:.2f}, FBA2={df.loc[min_idx, 'FBA2_deltaG']:.2f}"
     )
-    print(f"  Max: {df['SSR_final'].max():.6f}")
+    print(f"  Max: {df['nll_timecourse'].max():.2f}")
+
+    print("\nFinal Timepoint NLL Summary:")
+    min_idx = df["nll_final"].idxmin()
+    print(
+        f"  Min: {df['nll_final'].min():.2f} at "
+        f"FBA1={df.loc[min_idx, 'FBA1_deltaG']:.2f}, FBA2={df.loc[min_idx, 'FBA2_deltaG']:.2f}"
+    )
+    print(f"  Max: {df['nll_final'].max():.2f}")
 
     print(f"\nGenerated files in: {output_dir}")
     print("  - gibbs_landscape_2d.csv")
