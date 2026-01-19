@@ -11,6 +11,15 @@ Key differences from enzyme_simulation.py (steady-state):
 - Likelihood uses time-course MIDs at multiple observation times
 - More information content from transient dynamics
 
+Labeling:
+  - A_e (external A): 100% labeled on both atoms (isotopomer A_11)
+  - Q_e, P_e (external Q, P): 100% unlabeled
+
+Inference approach:
+  1. Run enzyme_ode to get metabolic steady-state fluxes and concentrations
+  2. Run isotopomer_ode from that steady state (all unlabeled) for time-course MIDs
+  3. Use fluxes/concentrations from step 1 and time-course MIDs from step 2 in log-likelihood
+
 Only A, Q, P MIDs are used (measurable metabolites), not enzyme intermediates.
 """
 
@@ -28,9 +37,9 @@ from diffrax import SteadyStateEvent
 import blackjax
 
 try:
-    from scripts.isotopomer_simulation import isotopomer_ode
+    from scripts.isotopomer_simulation import isotopomer_ode, enzyme_ode
 except ModuleNotFoundError:
-    from isotopomer_simulation import isotopomer_ode
+    from isotopomer_simulation import isotopomer_ode, enzyme_ode
 
 
 SCRIPT_DIR = Path(__file__).parent
@@ -169,6 +178,50 @@ def compute_wegscheider_constraints_jax(params, formation_energies_array, temper
 def compute_E(EA, EPQ, EP, E_T):
     """Compute free enzyme from conservation constraint."""
     return E_T - EA - EPQ - EP
+
+
+def simulate_enzyme_to_steady_state_jax(params, initial_array):
+    """JAX-compatible enzyme ODE simulation to steady state.
+
+    Uses enzyme_ode (total concentrations without isotopomers) to find
+    metabolic steady state. This gives the fluxes and concentrations for
+    the log-likelihood calculation.
+
+    Parameters
+    ----------
+    params : dict
+        Parameter dictionary with rate constants
+    initial_array : jnp.array
+        Initial concentrations [A, Q, P, EA, EPQ, EP]
+
+    Returns
+    -------
+    diffrax.Solution
+        ODE solution at steady state
+    """
+    term = diffrax.ODETerm(enzyme_ode)
+    solver = diffrax.Kvaerno5()
+    stepsize_controller = diffrax.PIDController(rtol=1e-6, atol=1e-8)
+
+    discrete_terminating_event = SteadyStateEvent(rtol=1e-4, atol=1e-6)
+    saveat = diffrax.SaveAt(t1=True)
+
+    sol = diffrax.diffeqsolve(
+        term,
+        solver,
+        t0=0.0,
+        t1=jnp.inf,
+        dt0=1e-10,
+        y0=initial_array,
+        args=params,
+        saveat=saveat,
+        stepsize_controller=stepsize_controller,
+        max_steps=int(1e7),
+        discrete_terminating_event=discrete_terminating_event,
+        throw=False,
+    )
+
+    return sol
 
 
 def simulate_isotopomers_timecourse(params, initial_total_array, observation_times):
@@ -353,6 +406,13 @@ def params_dict_to_array(params):
 def generate_reference_data_single_condition(params, initial, observation_times):
     """Generate reference observations including time-course MIDs.
 
+    Two-step process:
+    1. Run enzyme_ode to get steady-state fluxes and concentrations
+    2. Run isotopomer_ode from that steady state (all unlabeled) for time-course MIDs
+
+    The fluxes and concentrations come from enzyme_ode (step 1).
+    The time-course MIDs come from isotopomer_ode (step 2) with A_e = A_11 (fully labeled).
+
     Parameters
     ----------
     params : dict
@@ -370,30 +430,23 @@ def generate_reference_data_single_condition(params, initial, observation_times)
     # Apply constraints to get updated params
     params = compute_wegscheider_constraints(params)
 
-    # First get metabolic steady state (total concentrations)
-    sol_ss = simulate_ode_to_steady_state(params, initial)
-    y_ss = sol_ss.ys[0] if sol_ss.ys.ndim > 1 else sol_ss.ys
+    initial_array = jnp.array([
+        initial["A"], initial["Q"], initial["P"],
+        initial["EA"], initial["EPQ"], initial["EP"]
+    ])
 
-    # Then run isotopomer simulation from unlabeled state at metabolic SS
-    iso_sol = simulate_isotopomers_timecourse(params, y_ss, observation_times)
+    # Step 1: Run enzyme_ode to get metabolic steady state
+    enzyme_sol = simulate_enzyme_to_steady_state_jax(params, initial_array)
+    enzyme_y_ss = enzyme_sol.ys[0] if enzyme_sol.ys.ndim > 1 else enzyme_sol.ys
 
-    # Extract MIDs at each time point
-    # iso_sol.ys has shape (n_timepoints, 18)
-    timecourse_mids = {}
-    for t_idx in range(len(observation_times)):
-        t = float(observation_times[t_idx])
-        y_t = iso_sol.ys[t_idx]
-        mids_t = compute_mids_measurable_jax(y_t)
-        timecourse_mids[t] = np.array(mids_t)
-
-    # Compute concentrations and fluxes at steady state
-    A, Q, P = float(y_ss[0]), float(y_ss[1]), float(y_ss[2])
-    EA, EPQ, EP = float(y_ss[3]), float(y_ss[4]), float(y_ss[5])
+    # Extract concentrations from enzyme_ode steady state
+    A, Q, P = float(enzyme_y_ss[0]), float(enzyme_y_ss[1]), float(enzyme_y_ss[2])
+    EA, EPQ, EP = float(enzyme_y_ss[3]), float(enzyme_y_ss[4]), float(enzyme_y_ss[5])
     E = params["E_T"] - EA - EPQ - EP
 
     concs = {"A": A, "Q": Q, "P": P, "EA": EA, "EPQ": EPQ, "EP": EP, "E": E}
 
-    # Exchange fluxes with external pools
+    # Exchange fluxes with external pools from enzyme_ode steady state
     v_A_ex = params["k_A_ex"] * (params["A_e"] - A)
     v_Q_ex = params["k_Q_ex"] * (params["Q_e"] - Q)
     v_P_ex = params["k_P_ex"] * (params["P_e"] - P)
@@ -410,11 +463,23 @@ def generate_reference_data_single_condition(params, initial, observation_times)
         "v_net": v_A_ex,
     }
 
+    # Step 2: Run isotopomer_ode time-course from enzyme_ode steady state (all unlabeled)
+    # This simulates the labeling experiment with A_e = A_11 (fully labeled)
+    iso_sol = simulate_isotopomers_timecourse(params, enzyme_y_ss, observation_times)
+
+    # Extract MIDs at each time point
+    timecourse_mids = {}
+    for t_idx in range(len(observation_times)):
+        t = float(observation_times[t_idx])
+        y_t = iso_sol.ys[t_idx]
+        mids_t = compute_mids_measurable_jax(y_t)
+        timecourse_mids[t] = np.array(mids_t)
+
     return {
         "fluxes": net_rates,
         "concentrations": concs,
         "timecourse_mids": timecourse_mids,
-        "steady_state_array": np.array(y_ss),  # Full [A, Q, P, EA, EPQ, EP] for isotopomer init
+        "enzyme_steady_state": np.array(enzyme_y_ss),  # For initializing isotopomer sim
     }
 
 
@@ -439,10 +504,17 @@ def compute_condition_likelihood(
     param_array,
     Q_e,
     P_e,
-    steady_state_array,
+    initial_array,
     observation_times,
 ):
     """Compute log-likelihood for a single condition with timecourse MIDs.
+
+    Two-step process:
+    1. Run enzyme_ode to get steady-state fluxes and concentrations
+    2. Run isotopomer_ode from that steady state (all unlabeled) for time-course MIDs
+
+    Fluxes and concentrations are from enzyme_ode (step 1).
+    Time-course MIDs are from isotopomer_ode (step 2) with A_e = A_11 (fully labeled).
 
     Parameters
     ----------
@@ -462,8 +534,8 @@ def compute_condition_likelihood(
         External Q concentration (fixed)
     P_e : float
         External P concentration (fixed)
-    steady_state_array : jnp.array
-        Steady-state concentrations from true parameters (6,): [A, Q, P, EA, EPQ, EP]
+    initial_array : jnp.array
+        Initial conditions for enzyme_ode (6,): [A, Q, P, EA, EPQ, EP]
     observation_times : jnp.array
         Observation time points
 
@@ -501,20 +573,20 @@ def compute_condition_likelihood(
     params["k2f"] = k2f
     params["k_pq_r"] = k_pq_r
 
-    # Run isotopomer simulation from true-parameter steady state
-    iso_sol = simulate_isotopomers_timecourse(params, steady_state_array, observation_times)
+    # Step 1: Run enzyme_ode to get metabolic steady state
+    enzyme_sol = simulate_enzyme_to_steady_state_jax(params, initial_array)
+    enzyme_y_ss = enzyme_sol.ys[0] if enzyme_sol.ys.ndim > 1 else enzyme_sol.ys
 
-    # Check solver success
-    solver_failed = jnp.any(jnp.isnan(iso_sol.ys)) | (iso_sol.result != diffrax.RESULTS.successful)
+    # Check if enzyme solver failed
+    enzyme_failed = jnp.any(jnp.isnan(enzyme_sol.ys)) | (enzyme_sol.result != diffrax.RESULTS.discrete_terminating_event_occurred)
 
-    # Compute concentrations from final time point
-    iso_y_final = iso_sol.ys[-1]
-    A = iso_y_final[0] + iso_y_final[1] + iso_y_final[2] + iso_y_final[3]
-    Q = iso_y_final[14] + iso_y_final[15]
-    P = iso_y_final[16] + iso_y_final[17]
+    # Extract concentrations from enzyme_ode steady state (for flux/conc likelihood)
+    A = enzyme_y_ss[0]
+    Q = enzyme_y_ss[1]
+    P = enzyme_y_ss[2]
     sim_concs = jnp.array([A, Q, P])
 
-    # Net flux at steady state
+    # Net flux from enzyme_ode steady state
     sim_flux = params["k_A_ex"] * (A_e - A)
 
     # Log-likelihood for flux (normal distribution)
@@ -531,9 +603,14 @@ def compute_condition_likelihood(
         -0.5 * conc_residuals**2 - jnp.log(conc_std * jnp.sqrt(2 * jnp.pi))
     )
 
+    # Step 2: Run isotopomer_ode time-course from enzyme_ode steady state (all unlabeled)
+    iso_sol = simulate_isotopomers_timecourse(params, enzyme_y_ss, observation_times)
+
+    # Check if isotopomer solver failed
+    iso_failed = jnp.any(jnp.isnan(iso_sol.ys)) | (iso_sol.result != diffrax.RESULTS.successful)
+
     # Log-likelihood for time-course MIDs (lognormal)
     mid_std = 0.01
-    ll_mids = 0.0
 
     # Loop over time points
     def compute_timepoint_ll(t_idx):
@@ -556,6 +633,8 @@ def compute_condition_likelihood(
 
     ll_condition = ll_flux + ll_concs + ll_mids
 
+    # Return -inf if either solver failed
+    solver_failed = enzyme_failed | iso_failed
     return jnp.where(solver_failed, -jnp.inf, ll_condition)
 
 
@@ -563,7 +642,7 @@ def compute_log_posterior_jax(
     log_param_array,
     fixed_params_constant,
     fixed_params_varying,
-    steady_state_arrays,
+    initial_array,
     ref_flux_array,
     ref_concs_arrays,
     ref_mids_arrays,
@@ -581,8 +660,8 @@ def compute_log_posterior_jax(
         Constant fixed parameters [Q_e, P_e]
     fixed_params_varying : jnp.array
         Varying fixed parameters per condition (n_conditions, 2)
-    steady_state_arrays : jnp.array
-        Steady-state concentrations from true parameters (n_conditions, 6)
+    initial_array : jnp.array
+        Initial conditions for enzyme_ode (6,): [A, Q, P, EA, EPQ, EP]
     ref_flux_array : jnp.array
         Reference net flux values (n_conditions,)
     ref_concs_arrays : jnp.array
@@ -615,9 +694,9 @@ def compute_log_posterior_jax(
 
     # vmap over conditions
     condition_lls = jax.vmap(
-        lambda A_e, E_T, rf, rc, rm, ss: compute_condition_likelihood(
+        lambda A_e, E_T, rf, rc, rm: compute_condition_likelihood(
             A_e, E_T, rf, rc, rm, param_array, Q_e, P_e,
-            ss, observation_times
+            initial_array, observation_times
         )
     )(
         fixed_params_varying[:, 0],
@@ -625,7 +704,6 @@ def compute_log_posterior_jax(
         ref_flux_array,
         ref_concs_arrays,
         ref_mids_arrays,
-        steady_state_arrays,
     )
 
     total_log_likelihood = jnp.sum(condition_lls)
@@ -694,6 +772,12 @@ def run_mcmc(
         [cond["A_e"], cond["E_T"]] for cond in conditions
     ])
 
+    # Initial conditions array (same for all conditions)
+    initial_array = jnp.array([
+        initial["A"], initial["Q"], initial["P"],
+        initial["EA"], initial["EPQ"], initial["EP"]
+    ])
+
     # Generate reference data
     print("\nGenerating reference data for all conditions...")
     sys.stdout.flush()
@@ -720,16 +804,11 @@ def run_mcmc(
         for rd in ref_data_list
     ])
 
-    # Extract steady-state arrays for each condition: (n_conditions, 6)
-    steady_state_arrays = jnp.array([
-        rd["steady_state_array"] for rd in ref_data_list
-    ])
-
     print(f"Reference data shapes:")
     print(f"  ref_flux_array: {ref_flux_array.shape}")
     print(f"  ref_concs_arrays: {ref_concs_arrays.shape}")
     print(f"  ref_mids_arrays: {ref_mids_arrays.shape}")
-    print(f"  steady_state_arrays: {steady_state_arrays.shape}")
+    print(f"  initial_array: {initial_array.shape}")
     sys.stdout.flush()
 
     # Prior
@@ -743,7 +822,7 @@ def run_mcmc(
             log_param_array,
             fixed_params_constant,
             fixed_params_varying,
-            steady_state_arrays,
+            initial_array,
             ref_flux_array,
             ref_concs_arrays,
             ref_mids_arrays,

@@ -152,7 +152,7 @@ def run_simulation(gibbs_overrides, timepoints):
         isim.set_timepoints(timepoints)
         isim.set_labeling_strategy(
             "Glc_ext",
-            labeling_pattern=["110001"],
+            labeling_pattern=["110000"],
             percentage=[1.0],
             purity=[1.0],
         )

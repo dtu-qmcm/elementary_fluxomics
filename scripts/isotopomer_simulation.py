@@ -4,6 +4,14 @@
 Simulates the enzyme mechanism by tracking each isotopomer as a separate
 species. Reaction rates use the same kinetic parameters - isotope labels
 don't affect kinetics. MID fractions are computed by normalizing.
+
+Labeling pattern:
+  - A_e (external A): 100% labeled on both atoms (isotopomer A_11)
+  - Q_e, P_e (external Q, P): 100% unlabeled
+
+This module provides two ODE functions:
+  - enzyme_ode: Total concentrations only (no isotopomers) for steady-state
+  - isotopomer_ode: Full isotopomer tracking for labeling dynamics
 """
 
 from pathlib import Path
@@ -87,6 +95,66 @@ def build_initial_state(total_concs):
     return y0
 
 
+def enzyme_ode(t, y, params):
+    """ODE system for total concentrations (no isotope labeling).
+
+    This function solves for steady-state fluxes and concentrations without
+    tracking individual isotopomers. Use this to find metabolic steady state,
+    then use isotopomer_ode for labeling dynamics.
+
+    State variables: [A, Q, P, EA, EPQ, EP]
+
+    Mass balances:
+    - A: exchange with external pool, consumed by enzyme binding
+    - Q: produced by v4, exchange with external pool, interconversion with P
+    - P: produced by v5, exchange with external pool, interconversion with Q
+    - EA, EPQ, EP: enzyme intermediates
+
+    Enzyme conservation: E = E_T - EA - EPQ - EP
+    """
+    A, Q, P, EA, EPQ, EP = y[0], y[1], y[2], y[3], y[4], y[5]
+
+    # Free enzyme from conservation
+    E = params["E_T"] - EA - EPQ - EP
+
+    # Extract parameters
+    A_e = params["A_e"]
+    Q_e = params["Q_e"]
+    P_e = params["P_e"]
+    k_A_ex = params["k_A_ex"]
+    k_Q_ex = params["k_Q_ex"]
+    k_P_ex = params["k_P_ex"]
+    k2f, k2r = params["k2f"], params["k2r"]
+    k3f, k3r = params["k3f"], params["k3r"]
+    k4f, k4r = params["k4f"], params["k4r"]
+    k5f, k5r = params["k5f"], params["k5r"]
+    k_pq_f, k_pq_r = params["k_pq_f"], params["k_pq_r"]
+
+    # Exchange reactions with external pools
+    v_A_ex = k_A_ex * (A_e - A)
+    v_Q_ex = k_Q_ex * (Q_e - Q)
+    v_P_ex = k_P_ex * (P_e - P)
+
+    # Enzyme-catalyzed reactions
+    v2 = A * E * k2f - EA * k2r
+    v3 = EA * k3f - EPQ * k3r
+    v4 = EPQ * k4f - Q * EP * k4r
+    v5 = EP * k5f - E * P * k5r
+
+    # P <-> Q interconversion
+    v_pq = P * k_pq_f - Q * k_pq_r
+
+    # Mass balances
+    dA_dt = v_A_ex - v2
+    dQ_dt = v4 + v_Q_ex + v_pq
+    dP_dt = v5 + v_P_ex - v_pq
+    dEA_dt = v2 - v3
+    dEPQ_dt = v3 - v4
+    dEP_dt = v4 - v5
+
+    return jnp.array([dA_dt, dQ_dt, dP_dt, dEA_dt, dEPQ_dt, dEP_dt])
+
+
 def isotopomer_ode(t, y, params):
     """ODE system for isotopomer dynamics with external pool exchange kinetics.
 
@@ -103,7 +171,7 @@ def isotopomer_ode(t, y, params):
     where X_e is the fixed external concentration.
 
     External labeling patterns:
-      - A_e: 100% labeled on atom 'a' (isotopomer A_10)
+      - A_e: 100% labeled on both atoms (isotopomer A_11)
       - Q_e: 100% unlabeled (isotopomer Q_0)
       - P_e: 100% unlabeled (isotopomer P_0)
     """
@@ -141,19 +209,19 @@ def isotopomer_ode(t, y, params):
 
     # =========================================================================
     # v_A_ex: A_e <-> A (exchange with external A pool)
-    # A_e is 100% labeled on atom 'a' (isotopomer A_10)
+    # A_e is 100% labeled on both atoms (isotopomer A_11)
     # Net flux: v_A_ex = k_A_ex * (A_e - A)
-    # - When v_A_ex > 0 (net influx): add to A_10 only
+    # - When v_A_ex > 0 (net influx): add to A_11 only
     # - When v_A_ex < 0 (net efflux): remove proportionally from all isotopomers
     # =========================================================================
     v_A_ex = k_A_ex * (A_e - A)
     # Avoid division by zero
     A_safe = jnp.maximum(A, 1e-10)
-    # Influx goes to A_10, efflux is proportional
+    # Influx goes to A_11 (fully labeled), efflux is proportional
     dA_00_v1 = jnp.where(v_A_ex >= 0, 0.0, v_A_ex * A_00 / A_safe)
     dA_01_v1 = jnp.where(v_A_ex >= 0, 0.0, v_A_ex * A_01 / A_safe)
-    dA_10_v1 = jnp.where(v_A_ex >= 0, v_A_ex, v_A_ex * A_10 / A_safe)
-    dA_11_v1 = jnp.where(v_A_ex >= 0, 0.0, v_A_ex * A_11 / A_safe)
+    dA_10_v1 = jnp.where(v_A_ex >= 0, 0.0, v_A_ex * A_10 / A_safe)
+    dA_11_v1 = jnp.where(v_A_ex >= 0, v_A_ex, v_A_ex * A_11 / A_safe)
 
     # =========================================================================
     # v2: A + E <-> EA (atoms preserved)

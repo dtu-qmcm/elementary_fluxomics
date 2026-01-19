@@ -120,7 +120,7 @@ def run_simulation(thermo_overrides=None):
         isim.set_timepoints(TIMEPOINTS)
         isim.set_labeling_strategy(
             "Glc_ext",
-            labeling_pattern=["110001"],
+            labeling_pattern=["110000"],
             percentage=[1.0],
             purity=[1.0],
         )

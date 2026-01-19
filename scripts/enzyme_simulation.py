@@ -22,8 +22,13 @@ Atom mapping:
   P(a) <-> Q(a)  (interconversion)
 
 Labeling:
-  - A_e (external A): 100% labeled on atom 'a' only (isotopomer A_10)
+  - A_e (external A): 100% labeled on both atoms (isotopomer A_11)
   - Q_e, P_e (external Q, P): 100% unlabeled
+
+Inference approach:
+  1. Run enzyme_ode to get metabolic steady-state fluxes and concentrations
+  2. Run isotopomer_ode from that steady state (all unlabeled) to get MIDs
+  3. Use fluxes/concentrations from step 1 and MIDs from step 2 in log-likelihood
 """
 
 from pathlib import Path
@@ -40,9 +45,9 @@ from diffrax import SteadyStateEvent
 import blackjax
 
 try:
-    from scripts.isotopomer_simulation import isotopomer_ode
+    from scripts.isotopomer_simulation import isotopomer_ode, enzyme_ode
 except ModuleNotFoundError:
-    from isotopomer_simulation import isotopomer_ode
+    from isotopomer_simulation import isotopomer_ode, enzyme_ode
 
 
 SCRIPT_DIR = Path(__file__).parent
@@ -229,15 +234,64 @@ def compute_E(EA, EPQ, EP, E_T):
     return E_T - EA - EPQ - EP
 
 
+def simulate_enzyme_to_steady_state_jax(params, initial_array):
+    """JAX-compatible enzyme ODE simulation to steady state.
+
+    Uses enzyme_ode (total concentrations without isotopomers) to find
+    metabolic steady state. This gives the fluxes and concentrations for
+    the log-likelihood calculation.
+
+    Parameters
+    ----------
+    params : dict
+        Parameter dictionary with rate constants
+    initial_array : jnp.array
+        Initial concentrations [A, Q, P, EA, EPQ, EP]
+
+    Returns
+    -------
+    diffrax.Solution
+        ODE solution at steady state
+    """
+    term = diffrax.ODETerm(enzyme_ode)
+    solver = diffrax.Kvaerno5()
+    stepsize_controller = diffrax.PIDController(rtol=1e-6, atol=1e-8)
+
+    discrete_terminating_event = SteadyStateEvent(rtol=1e-4, atol=1e-6)
+    saveat = diffrax.SaveAt(t1=True)
+
+    sol = diffrax.diffeqsolve(
+        term,
+        solver,
+        t0=0.0,
+        t1=jnp.inf,
+        dt0=1e-10,
+        y0=initial_array,
+        args=params,
+        saveat=saveat,
+        stepsize_controller=stepsize_controller,
+        max_steps=int(1e7),
+        discrete_terminating_event=discrete_terminating_event,
+        throw=False,
+    )
+
+    return sol
+
+
 def simulate_isotopomers_to_steady_state(params, initial_total_array):
     """JAX-compatible isotopomer simulation to steady state.
+
+    Starts from the given total concentrations (all isotopomers unlabeled)
+    and runs until isotopic steady state is reached. The boundary condition
+    A_e is fully labeled (A_11).
 
     Parameters
     ----------
     params : dict
         Parameter dictionary with rate constants
     initial_total_array : jnp.array
-        Initial total concentrations [A, Q, P, EA, EPQ, EP]
+        Initial total concentrations [A, Q, P, EA, EPQ, EP] from enzyme_ode
+        steady state. All isotopomers start unlabeled.
 
     Returns
     -------
@@ -650,6 +704,13 @@ def params_dict_to_array(params):
 def generate_reference_data_single_condition(params, initial):
     """Generate reference observations from a parameter set for a single condition.
 
+    Two-step process:
+    1. Run enzyme_ode to get steady-state fluxes and concentrations
+    2. Run isotopomer_ode from that steady state (all unlabeled) to get MIDs
+
+    The fluxes and concentrations come from enzyme_ode (step 1).
+    The MIDs come from isotopomer_ode (step 2) with A_e = A_11 (fully labeled).
+
     Parameters
     ----------
     params : dict
@@ -670,31 +731,18 @@ def generate_reference_data_single_condition(params, initial):
         initial["EA"], initial["EPQ"], initial["EP"]
     ])
 
-    # Run isotopomer simulation to steady state
-    iso_sol = simulate_isotopomers_to_steady_state(params, initial_array)
+    # Step 1: Run enzyme_ode to get metabolic steady state
+    enzyme_sol = simulate_enzyme_to_steady_state_jax(params, initial_array)
+    enzyme_y_ss = enzyme_sol.ys[0] if enzyme_sol.ys.ndim > 1 else enzyme_sol.ys
 
-    # Extract steady-state isotopomer state (with SaveAt(t1=True), sol.ys is (1, 18))
-    iso_y_ss = iso_sol.ys[0] if iso_sol.ys.ndim > 1 else iso_sol.ys
+    # Extract concentrations from enzyme_ode steady state
+    A, Q, P = float(enzyme_y_ss[0]), float(enzyme_y_ss[1]), float(enzyme_y_ss[2])
+    EA, EPQ, EP = float(enzyme_y_ss[3]), float(enzyme_y_ss[4]), float(enzyme_y_ss[5])
+    E = params["E_T"] - EA - EPQ - EP
 
-    # Compute MIDs from isotopomer state
-    ss_mids = compute_mids_jax(iso_y_ss)
+    concs = {"A": A, "Q": Q, "P": P, "EA": EA, "EPQ": EPQ, "EP": EP, "E": E}
 
-    # Compute total concentrations from isotopomers
-    concs = {
-        "A": float(iso_y_ss[0] + iso_y_ss[1] + iso_y_ss[2] + iso_y_ss[3]),
-        "EA": float(iso_y_ss[4] + iso_y_ss[5] + iso_y_ss[6] + iso_y_ss[7]),
-        "EPQ": float(iso_y_ss[8] + iso_y_ss[9] + iso_y_ss[10] + iso_y_ss[11]),
-        "EP": float(iso_y_ss[12] + iso_y_ss[13]),
-        "Q": float(iso_y_ss[14] + iso_y_ss[15]),
-        "P": float(iso_y_ss[16] + iso_y_ss[17]),
-    }
-    concs["E"] = params["E_T"] - concs["EA"] - concs["EPQ"] - concs["EP"]
-
-    # Compute net fluxes at steady state
-    A, Q, P = concs["A"], concs["Q"], concs["P"]
-    EA, EPQ, EP, E = concs["EA"], concs["EPQ"], concs["EP"], concs["E"]
-
-    # Exchange fluxes with external pools
+    # Compute net fluxes at steady state from enzyme_ode
     v_A_ex = params["k_A_ex"] * (params["A_e"] - A)
     v_Q_ex = params["k_Q_ex"] * (params["Q_e"] - Q)
     v_P_ex = params["k_P_ex"] * (params["P_e"] - P)
@@ -711,6 +759,14 @@ def generate_reference_data_single_condition(params, initial):
         "v_net": v_A_ex,  # Net flux through the system at steady state
     }
 
+    # Step 2: Run isotopomer_ode from enzyme_ode steady state (all unlabeled)
+    # This simulates the labeling experiment with A_e = A_11 (fully labeled)
+    iso_sol = simulate_isotopomers_to_steady_state(params, enzyme_y_ss)
+    iso_y_ss = iso_sol.ys[0] if iso_sol.ys.ndim > 1 else iso_sol.ys
+
+    # Compute MIDs from isotopomer state
+    ss_mids = compute_mids_jax(iso_y_ss)
+
     # Convert MIDs to numpy for compatibility
     ss_mids_np = {k: np.array(v) for k, v in ss_mids.items()}
 
@@ -718,6 +774,7 @@ def generate_reference_data_single_condition(params, initial):
         "fluxes": net_rates,
         "concentrations": concs,
         "ss_mids": ss_mids_np,
+        "enzyme_steady_state": np.array(enzyme_y_ss),  # For initializing isotopomer sim
     }
 
 
@@ -760,6 +817,13 @@ def compute_condition_likelihood(
     initial_array,
 ):
     """Compute log-likelihood for a single experimental condition.
+
+    Two-step process:
+    1. Run enzyme_ode to get steady-state fluxes and concentrations
+    2. Run isotopomer_ode from that steady state (all unlabeled) to get MIDs
+
+    Fluxes and concentrations are from enzyme_ode (step 1).
+    MIDs are from isotopomer_ode (step 2) with A_e = A_11 (fully labeled).
 
     Parameters
     ----------
@@ -816,24 +880,22 @@ def compute_condition_likelihood(
     params["k2f"] = k2f
     params["k_pq_r"] = k_pq_r
 
-    # Run isotopomer simulation to steady state
-    iso_sol = simulate_isotopomers_to_steady_state(params, initial_array)
+    # Step 1: Run enzyme_ode to get metabolic steady state
+    enzyme_sol = simulate_enzyme_to_steady_state_jax(params, initial_array)
+    enzyme_y_ss = enzyme_sol.ys[0] if enzyme_sol.ys.ndim > 1 else enzyme_sol.ys
 
-    # Check if isotopomer solver failed
-    solver_failed = jnp.any(jnp.isnan(iso_sol.ys)) | (iso_sol.result != diffrax.RESULTS.discrete_terminating_event_occurred)
+    # Check if enzyme solver failed
+    enzyme_failed = jnp.any(jnp.isnan(enzyme_sol.ys)) | (enzyme_sol.result != diffrax.RESULTS.discrete_terminating_event_occurred)
 
-    # Extract steady-state isotopomer state (with SaveAt(t1=True), sol.ys is (1, 18))
-    iso_y_ss = iso_sol.ys[0] if iso_sol.ys.ndim > 1 else iso_sol.ys
-
-    # Compute total concentrations from isotopomers
-    A = iso_y_ss[0] + iso_y_ss[1] + iso_y_ss[2] + iso_y_ss[3]
-    Q = iso_y_ss[14] + iso_y_ss[15]
-    P = iso_y_ss[16] + iso_y_ss[17]
+    # Extract concentrations from enzyme_ode steady state (for flux/conc likelihood)
+    A = enzyme_y_ss[0]
+    Q = enzyme_y_ss[1]
+    P = enzyme_y_ss[2]
 
     # Measurable concentrations only (A, Q, P)
     sim_concs = jnp.array([A, Q, P])
 
-    # Compute net flux (exchange flux at steady state)
+    # Compute net flux from enzyme_ode steady state
     sim_flux = params["k_A_ex"] * (A_e - A)
 
     # Log-likelihood for flux (normal distribution, std=0.1)
@@ -850,6 +912,15 @@ def compute_condition_likelihood(
         -0.5 * conc_residuals**2
         - jnp.log(conc_std * jnp.sqrt(2 * jnp.pi))
     )
+
+    # Step 2: Run isotopomer_ode from enzyme_ode steady state (all unlabeled)
+    iso_sol = simulate_isotopomers_to_steady_state(params, enzyme_y_ss)
+
+    # Check if isotopomer solver failed
+    iso_failed = jnp.any(jnp.isnan(iso_sol.ys)) | (iso_sol.result != diffrax.RESULTS.discrete_terminating_event_occurred)
+
+    # Extract steady-state isotopomer state
+    iso_y_ss = iso_sol.ys[0] if iso_sol.ys.ndim > 1 else iso_sol.ys
 
     # Compute simulated MIDs from isotopomer state
     sim_mids_dict = compute_mids_jax(iso_y_ss)
@@ -874,7 +945,8 @@ def compute_condition_likelihood(
 
     ll_condition = ll_flux + ll_concs + ll_mids
 
-    # Return -inf if solver failed
+    # Return -inf if either solver failed
+    solver_failed = enzyme_failed | iso_failed
     return jnp.where(solver_failed, -jnp.inf, ll_condition)
 
 
