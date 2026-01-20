@@ -760,8 +760,8 @@ def run_mcmc(
     ref_params,
     initial,
     conditions=None,
-    n_warmup=50,
-    n_samples=100,
+    n_warmup=200,
+    n_samples=200,
     seed=42,
 ):
     """Run MCMC sampling using blackjax NUTS with multiple experimental conditions.

@@ -820,8 +820,8 @@ def run_mcmc(
     initial,
     conditions=None,
     observation_times=None,
-    n_warmup=50,
-    n_samples=100,
+    n_warmup=200,
+    n_samples=200,
     n_chains=1,
     seed=42,
 ):
