@@ -208,20 +208,24 @@ def isotopomer_ode(t, y, params):
     k_pq_f, k_pq_r = params["k_pq_f"], params["k_pq_r"]
 
     # =========================================================================
-    # v_A_ex: A_e <-> A (exchange with external A pool)
-    # A_e is 100% labeled on both atoms (isotopomer A_11)
-    # Net flux: v_A_ex = k_A_ex * (A_e - A)
-    # - When v_A_ex > 0 (net influx): add to A_11 only
-    # - When v_A_ex < 0 (net efflux): remove proportionally from all isotopomers
+    # v1: A_ext -> A (input of labeled substrate)
+    # A_ext is 100% labeled on both atoms (isotopomer A_11)
+    #
+    # The exchange is modeled as two separate one-way fluxes:
+    #   v1_in = k_A_ex * A_e (influx of labeled A_11)
+    #   v1_out = k_A_ex * A (efflux proportional to isotopomer fractions)
+    #
+    # This correctly captures isotope dilution even when there's net influx.
     # =========================================================================
-    v_A_ex = k_A_ex * (A_e - A)
-    # Avoid division by zero
+    v1_in = k_A_ex * A_e  # Influx: always brings A_11 (fully labeled)
+    v1_out = k_A_ex * A   # Efflux: removes proportionally from all isotopomers
+
     A_safe = jnp.maximum(A, 1e-10)
-    # Influx goes to A_11 (fully labeled), efflux is proportional
-    dA_00_v1 = jnp.where(v_A_ex >= 0, 0.0, v_A_ex * A_00 / A_safe)
-    dA_01_v1 = jnp.where(v_A_ex >= 0, 0.0, v_A_ex * A_01 / A_safe)
-    dA_10_v1 = jnp.where(v_A_ex >= 0, 0.0, v_A_ex * A_10 / A_safe)
-    dA_11_v1 = jnp.where(v_A_ex >= 0, v_A_ex, v_A_ex * A_11 / A_safe)
+    # Influx goes to A_11 only, efflux removes proportionally
+    dA_00_v1 = -v1_out * A_00 / A_safe
+    dA_01_v1 = -v1_out * A_01 / A_safe
+    dA_10_v1 = -v1_out * A_10 / A_safe
+    dA_11_v1 = v1_in - v1_out * A_11 / A_safe
 
     # =========================================================================
     # v2: A + E <-> EA (atoms preserved)
@@ -321,28 +325,38 @@ def isotopomer_ode(t, y, params):
     dP_1_v5 = v5f_1 - v5b_1
 
     # =========================================================================
-    # v_Q_ex: Q_e <-> Q (exchange with external Q pool)
-    # Q_e is 100% unlabeled (isotopomer Q_0)
-    # Net flux: v_Q_ex = k_Q_ex * (Q_e - Q)
-    # - When v_Q_ex > 0 (net influx): add to Q_0 only
-    # - When v_Q_ex < 0 (net efflux): remove proportionally from all isotopomers
+    # vq_in/vq_out: Q exchange with external Q pool
+    # Q_e (external) is 100% unlabeled (isotopomer Q_0)
+    #
+    # Modeled as two separate one-way fluxes:
+    #   vq_in = k_Q_ex * Q_e (influx of unlabeled Q_0)
+    #   vq_out = k_Q_ex * Q (efflux proportional to isotopomer fractions)
+    #
+    # Net flux: v_Q_ex = vq_in - vq_out = k_Q_ex * (Q_e - Q)
     # =========================================================================
-    v_Q_ex = k_Q_ex * (Q_e - Q)
+    vq_in = k_Q_ex * Q_e   # Influx: always brings Q_0 (unlabeled)
+    vq_out = k_Q_ex * Q    # Efflux: removes proportionally
+
     Q_safe = jnp.maximum(Q, 1e-10)
-    dQ_0_vqex = jnp.where(v_Q_ex >= 0, v_Q_ex, v_Q_ex * Q_0 / Q_safe)
-    dQ_1_vqex = jnp.where(v_Q_ex >= 0, 0.0, v_Q_ex * Q_1 / Q_safe)
+    dQ_0_vqex = vq_in - vq_out * Q_0 / Q_safe
+    dQ_1_vqex = -vq_out * Q_1 / Q_safe
 
     # =========================================================================
-    # v_P_ex: P_e <-> P (exchange with external P pool)
-    # P_e is 100% unlabeled (isotopomer P_0)
-    # Net flux: v_P_ex = k_P_ex * (P_e - P)
-    # - When v_P_ex > 0 (net influx): add to P_0 only
-    # - When v_P_ex < 0 (net efflux): remove proportionally from all isotopomers
+    # vp_in/vp_out: P exchange with external P pool
+    # P_e (external) is 100% unlabeled (isotopomer P_0)
+    #
+    # Modeled as two separate one-way fluxes:
+    #   vp_in = k_P_ex * P_e (influx of unlabeled P_0)
+    #   vp_out = k_P_ex * P (efflux proportional to isotopomer fractions)
+    #
+    # Net flux: v_P_ex = vp_in - vp_out = k_P_ex * (P_e - P)
     # =========================================================================
-    v_P_ex = k_P_ex * (P_e - P)
+    vp_in = k_P_ex * P_e   # Influx: always brings P_0 (unlabeled)
+    vp_out = k_P_ex * P    # Efflux: removes proportionally
+
     P_safe = jnp.maximum(P, 1e-10)
-    dP_0_vpex = jnp.where(v_P_ex >= 0, v_P_ex, v_P_ex * P_0 / P_safe)
-    dP_1_vpex = jnp.where(v_P_ex >= 0, 0.0, v_P_ex * P_1 / P_safe)
+    dP_0_vpex = vp_in - vp_out * P_0 / P_safe
+    dP_1_vpex = -vp_out * P_1 / P_safe
 
     # =========================================================================
     # vpq: P <-> Q (atoms preserved)

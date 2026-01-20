@@ -7,7 +7,7 @@ unlabeled, then labeled substrate is introduced at t=0 and MIDs are measured at
 multiple time points during the transient.
 
 Key differences from enzyme_simulation.py (steady-state):
-- Isotopomer simulation saves at specified time points, not just steady state
+- EMU simulation saves at specified time points, not just steady state
 - Likelihood uses time-course MIDs at multiple observation times
 - More information content from transient dynamics
 
@@ -17,10 +17,11 @@ Labeling:
 
 Inference approach:
   1. Run enzyme_ode to get metabolic steady-state fluxes and concentrations
-  2. Run isotopomer_ode from that steady state (all unlabeled) for time-course MIDs
+  2. Run pure JAX EMU simulation for time-course MIDs
   3. Use fluxes/concentrations from step 1 and time-course MIDs from step 2 in log-likelihood
 
 Only A, Q, P MIDs are used (measurable metabolites), not enzyme intermediates.
+Uses pure JAX EMU simulation for gradient-based MCMC compatibility.
 """
 
 from pathlib import Path
@@ -37,9 +38,19 @@ from diffrax import SteadyStateEvent
 import blackjax
 
 try:
-    from scripts.isotopomer_simulation import isotopomer_ode, enzyme_ode
+    from scripts.isotopomer_simulation import enzyme_ode
+    from scripts.emu_jax import (
+        load_emu_network_structure,
+        simulate_inst_mdvs_pure_jax,
+        precompute_matrix_structure,
+    )
 except ModuleNotFoundError:
-    from isotopomer_simulation import isotopomer_ode, enzyme_ode
+    from isotopomer_simulation import enzyme_ode
+    from emu_jax import (
+        load_emu_network_structure,
+        simulate_inst_mdvs_pure_jax,
+        precompute_matrix_structure,
+    )
 
 
 SCRIPT_DIR = Path(__file__).parent
@@ -112,6 +123,172 @@ FORMATION_ENERGIES = {
     "P": 0.5,    # kJ/mol
     "Q": -2.5,   # kJ/mol
 }
+
+
+# Global cache for EMU network
+_PURE_JAX_EMU_NETWORK = None
+
+
+def get_pure_jax_emu_network():
+    """Get or initialize the pure JAX EMU network structure.
+
+    Returns
+    -------
+    tuple
+        (network, precomputed) where:
+        - network: Serialized EMU network structure
+        - precomputed: Precomputed matrix structure arrays for JAX tracing
+    """
+    global _PURE_JAX_EMU_NETWORK
+
+    if _PURE_JAX_EMU_NETWORK is None:
+        emu_network_path = PROJECT_ROOT / "models" / "simple_network" / "emu_network.json"
+        network = load_emu_network_structure(emu_network_path)
+        precomputed = precompute_matrix_structure(network)
+        _PURE_JAX_EMU_NETWORK = (network, precomputed)
+
+    return _PURE_JAX_EMU_NETWORK
+
+
+def compute_fluxes_array_pure_jax(concs, params, network):
+    """Compute flux array for pure JAX EMU simulation.
+
+    Parameters
+    ----------
+    concs : dict
+        Steady-state concentrations with keys A, Q, P, EA, EPQ, EP, E
+    params : dict
+        Rate constants
+    network : dict
+        Serialized EMU network structure
+
+    Returns
+    -------
+    jnp.ndarray
+        Flux array in order matching network["flux_ids_all"]
+    """
+    A = concs["A"]
+    Q = concs["Q"]
+    P = concs["P"]
+    EA = concs["EA"]
+    EPQ = concs["EPQ"]
+    EP = concs["EP"]
+    E = concs["E"]
+
+    # Compute all fluxes (matching reactions.tsv order)
+    fluxes_dict = {
+        "v1": params["k_A_ex"] * params["A_e"],  # A_ext -> A (input)
+        "v1_out": params["k_A_ex"] * A,  # A -> A_sink (output)
+        "v2_f": A * E * params["k2f"],
+        "v2_b": EA * params["k2r"],
+        "v3_f": EA * params["k3f"],
+        "v3_b": EPQ * params["k3r"],
+        "v4_f": EPQ * params["k4f"],
+        "v4_b": Q * EP * params["k4r"],
+        "v5_f": EP * params["k5f"],
+        "v5_b": E * P * params["k5r"],
+        "vq_out": params["k_Q_ex"] * Q,  # Q -> Q_ext (output)
+        "vq_in": params["k_Q_ex"] * params["Q_e"],  # Q_ext_in -> Q (input)
+        "vp_out": params["k_P_ex"] * P,  # P -> P_ext (output)
+        "vp_in": params["k_P_ex"] * params["P_e"],  # P_ext_in -> P (input)
+        "vpq_f": P * params["k_pq_f"],
+        "vpq_b": Q * params["k_pq_r"],
+    }
+
+    # Build array in network order
+    return jnp.array([fluxes_dict[fid] for fid in network["flux_ids_all"]])
+
+
+def compute_concs_array_pure_jax(concs, network):
+    """Compute concentration array for pure JAX EMU simulation.
+
+    Parameters
+    ----------
+    concs : dict
+        Concentration values
+    network : dict
+        Serialized EMU network structure
+
+    Returns
+    -------
+    jnp.ndarray
+        Concentration array in order matching network["metab_ids_all"]
+    """
+    return jnp.array([concs.get(mid, 1.0) for mid in network["metab_ids_all"]])
+
+
+def extract_measurable_mids_from_emu(emu_mdvs):
+    """Extract measurable MIDs (A, Q, P) from EMU results.
+
+    Parameters
+    ----------
+    emu_mdvs : dict
+        {emu_id: mdv_array} from simulate_inst_mdvs_pure_jax
+
+    Returns
+    -------
+    jnp.ndarray
+        MID array (7,): [A_M0, A_M1, A_M2, Q_M0, Q_M1, P_M0, P_M1]
+    """
+    # A_12 gives M+0, M+1, M+2 (size 3)
+    A_mid = emu_mdvs["A_12"]
+
+    # Q_1 gives M+0, M+1 (size 2)
+    Q_mid = emu_mdvs["Q_1"]
+
+    # P_1 gives M+0, M+1 (size 2)
+    P_mid = emu_mdvs["P_1"]
+
+    return jnp.concatenate([A_mid, Q_mid, P_mid])
+
+
+def simulate_emu_timecourse(params, concs_dict, observation_times, network, precomputed):
+    """Simulate EMU dynamics and return MIDs at specified times.
+
+    Parameters
+    ----------
+    params : dict
+        Parameter dictionary with rate constants
+    concs_dict : dict
+        Steady-state concentrations with keys A, Q, P, EA, EPQ, EP, E
+    observation_times : jnp.array
+        Time points at which to observe MIDs
+    network : dict
+        Serialized EMU network structure
+    precomputed : dict
+        Precomputed matrix structure arrays for JAX tracing
+
+    Returns
+    -------
+    dict
+        {time: mids_array} where mids_array is (7,) for measurable metabolites
+    """
+    # Include t=0 in timepoints for simulation
+    all_timepoints = jnp.concatenate([jnp.array([0.0]), observation_times])
+
+    # Compute fluxes and concentrations arrays
+    fluxes_array = compute_fluxes_array_pure_jax(concs_dict, params, network)
+    concs_array = compute_concs_array_pure_jax(concs_dict, network)
+
+    # Run pure JAX EMU simulation
+    emu_mdvs = simulate_inst_mdvs_pure_jax(
+        fluxes_array, concs_array, all_timepoints, network, precomputed
+    )
+
+    # Extract measurable MIDs at final timepoint
+    # Note: simulate_inst_mdvs_pure_jax returns MIDs at the final timepoint
+    # For time-course, we need to run multiple simulations or modify the function
+    # For now, we'll compute MIDs at each observation time separately
+    timecourse_mids = {}
+    for t in observation_times:
+        t_float = float(t)
+        timepoints_to_t = jnp.array([0.0, t_float])
+        emu_mdvs_at_t = simulate_inst_mdvs_pure_jax(
+            fluxes_array, concs_array, timepoints_to_t, network, precomputed
+        )
+        timecourse_mids[t_float] = extract_measurable_mids_from_emu(emu_mdvs_at_t)
+
+    return timecourse_mids
 
 
 def create_output_directory():
@@ -224,96 +401,6 @@ def simulate_enzyme_to_steady_state_jax(params, initial_array):
     return sol
 
 
-def simulate_isotopomers_timecourse(params, initial_total_array, observation_times):
-    """Simulate isotopomer dynamics and return states at specified times.
-
-    Parameters
-    ----------
-    params : dict
-        Parameter dictionary with rate constants
-    initial_total_array : jnp.array
-        Initial total concentrations [A, Q, P, EA, EPQ, EP]
-    observation_times : jnp.array
-        Time points at which to observe MIDs
-
-    Returns
-    -------
-    diffrax.Solution
-        ODE solution with states at observation times
-    """
-    # Build initial isotopomer state (all unlabeled at t=0)
-    y0 = jnp.zeros(18)
-    # A starts unlabeled (A_00 at index 0)
-    y0 = y0.at[0].set(initial_total_array[0])
-    # EA starts unlabeled (EA_00 at index 4)
-    y0 = y0.at[4].set(initial_total_array[3])
-    # EPQ starts unlabeled (EPQ_00 at index 8)
-    y0 = y0.at[8].set(initial_total_array[4])
-    # EP starts unlabeled (EP_0 at index 12)
-    y0 = y0.at[12].set(initial_total_array[5])
-    # Q starts unlabeled (Q_0 at index 14)
-    y0 = y0.at[14].set(initial_total_array[1])
-    # P starts unlabeled (P_0 at index 16)
-    y0 = y0.at[16].set(initial_total_array[2])
-
-    term = diffrax.ODETerm(isotopomer_ode)
-    solver = diffrax.Kvaerno5()
-    stepsize_controller = diffrax.PIDController(rtol=1e-6, atol=1e-8)
-
-    # Save at specified observation times
-    saveat = diffrax.SaveAt(ts=observation_times)
-
-    t_final = observation_times[-1]
-
-    sol = diffrax.diffeqsolve(
-        term,
-        solver,
-        t0=0.0,
-        t1=t_final,
-        dt0=1e-10,
-        y0=y0,
-        args=params,
-        saveat=saveat,
-        stepsize_controller=stepsize_controller,
-        max_steps=int(1e7),
-        throw=False,
-    )
-
-    return sol
-
-
-def compute_mids_measurable_jax(y):
-    """JAX-compatible MID computation for measurable metabolites only (A, Q, P).
-
-    Parameters
-    ----------
-    y : jnp.array
-        Isotopomer state vector (18 components)
-
-    Returns
-    -------
-    jnp.array
-        MID array (7,): [A_M0, A_M1, A_M2, Q_M0, Q_M1, P_M0, P_M1]
-    """
-    # A: 2 atoms, MID has 3 components (M+0, M+1, M+2)
-    A_00, A_01, A_10, A_11 = y[0], y[1], y[2], y[3]
-    A_total = A_00 + A_01 + A_10 + A_11
-    A_mid = jnp.array([A_00, A_01 + A_10, A_11]) / jnp.maximum(A_total, 1e-10)
-
-    # Q: 1 atom, MID has 2 components (M+0, M+1)
-    Q_0, Q_1 = y[14], y[15]
-    Q_total = Q_0 + Q_1
-    Q_mid = jnp.array([Q_0, Q_1]) / jnp.maximum(Q_total, 1e-10)
-
-    # P: 1 atom, MID has 2 components (M+0, M+1)
-    P_0, P_1 = y[16], y[17]
-    P_total = P_0 + P_1
-    P_mid = jnp.array([P_0, P_1]) / jnp.maximum(P_total, 1e-10)
-
-    # Concatenate: A (3) + Q (2) + P (2) = 7 total
-    return jnp.concatenate([A_mid, Q_mid, P_mid])
-
-
 def compute_rates(y, params):
     """Compute all reaction rates from state and parameters."""
     A, Q, P, EA, EPQ, EP = y
@@ -408,10 +495,10 @@ def generate_reference_data_single_condition(params, initial, observation_times)
 
     Two-step process:
     1. Run enzyme_ode to get steady-state fluxes and concentrations
-    2. Run isotopomer_ode from that steady state (all unlabeled) for time-course MIDs
+    2. Run pure JAX EMU simulation for time-course MIDs
 
     The fluxes and concentrations come from enzyme_ode (step 1).
-    The time-course MIDs come from isotopomer_ode (step 2) with A_e = A_11 (fully labeled).
+    The time-course MIDs come from EMU simulation (step 2) with A_ext fully labeled.
 
     Parameters
     ----------
@@ -463,23 +550,20 @@ def generate_reference_data_single_condition(params, initial, observation_times)
         "v_net": v_A_ex,
     }
 
-    # Step 2: Run isotopomer_ode time-course from enzyme_ode steady state (all unlabeled)
-    # This simulates the labeling experiment with A_e = A_11 (fully labeled)
-    iso_sol = simulate_isotopomers_timecourse(params, enzyme_y_ss, observation_times)
+    # Step 2: Run pure JAX EMU simulation for time-course MIDs
+    network, precomputed = get_pure_jax_emu_network()
+    timecourse_mids = simulate_emu_timecourse(
+        params, concs, observation_times, network, precomputed
+    )
 
-    # Extract MIDs at each time point
-    timecourse_mids = {}
-    for t_idx in range(len(observation_times)):
-        t = float(observation_times[t_idx])
-        y_t = iso_sol.ys[t_idx]
-        mids_t = compute_mids_measurable_jax(y_t)
-        timecourse_mids[t] = np.array(mids_t)
+    # Convert to numpy arrays for storage
+    timecourse_mids = {t: np.array(mids) for t, mids in timecourse_mids.items()}
 
     return {
         "fluxes": net_rates,
         "concentrations": concs,
         "timecourse_mids": timecourse_mids,
-        "enzyme_steady_state": np.array(enzyme_y_ss),  # For initializing isotopomer sim
+        "enzyme_steady_state": np.array(enzyme_y_ss),
     }
 
 
@@ -506,15 +590,17 @@ def compute_condition_likelihood(
     P_e,
     initial_array,
     observation_times,
+    emu_network,
+    precomputed,
 ):
     """Compute log-likelihood for a single condition with timecourse MIDs.
 
     Two-step process:
     1. Run enzyme_ode to get steady-state fluxes and concentrations
-    2. Run isotopomer_ode from that steady state (all unlabeled) for time-course MIDs
+    2. Run pure JAX EMU simulation for time-course MIDs
 
     Fluxes and concentrations are from enzyme_ode (step 1).
-    Time-course MIDs are from isotopomer_ode (step 2) with A_e = A_11 (fully labeled).
+    Time-course MIDs are from EMU simulation (step 2) with A_ext fully labeled.
 
     Parameters
     ----------
@@ -538,6 +624,10 @@ def compute_condition_likelihood(
         Initial conditions for enzyme_ode (6,): [A, Q, P, EA, EPQ, EP]
     observation_times : jnp.array
         Observation time points
+    emu_network : dict
+        Serialized EMU network structure
+    precomputed : dict
+        Precomputed matrix structure arrays for JAX tracing
 
     Returns
     -------
@@ -584,7 +674,15 @@ def compute_condition_likelihood(
     A = enzyme_y_ss[0]
     Q = enzyme_y_ss[1]
     P = enzyme_y_ss[2]
+    EA = enzyme_y_ss[3]
+    EPQ = enzyme_y_ss[4]
+    EP = enzyme_y_ss[5]
+    E = params["E_T"] - EA - EPQ - EP
+
     sim_concs = jnp.array([A, Q, P])
+
+    # Build concentration dict for EMU
+    concs_dict = {"A": A, "Q": Q, "P": P, "EA": EA, "EPQ": EPQ, "EP": EP, "E": E}
 
     # Net flux from enzyme_ode steady state
     sim_flux = params["k_A_ex"] * (A_e - A)
@@ -603,39 +701,39 @@ def compute_condition_likelihood(
         -0.5 * conc_residuals**2 - jnp.log(conc_std * jnp.sqrt(2 * jnp.pi))
     )
 
-    # Step 2: Run isotopomer_ode time-course from enzyme_ode steady state (all unlabeled)
-    iso_sol = simulate_isotopomers_timecourse(params, enzyme_y_ss, observation_times)
-
-    # Check if isotopomer solver failed
-    iso_failed = jnp.any(jnp.isnan(iso_sol.ys)) | (iso_sol.result != diffrax.RESULTS.successful)
+    # Step 2: Run pure JAX EMU simulation for time-course MIDs
+    # Compute fluxes and concentrations arrays
+    fluxes_array = compute_fluxes_array_pure_jax(concs_dict, params, emu_network)
+    concs_array = compute_concs_array_pure_jax(concs_dict, emu_network)
 
     # Log-likelihood for time-course MIDs (lognormal)
     mid_std = 0.01
 
-    # Loop over time points
-    def compute_timepoint_ll(t_idx):
-        y_t = iso_sol.ys[t_idx]
-        sim_mids_t = compute_mids_measurable_jax(y_t)
+    # Compute MID likelihood for each timepoint
+    def compute_timepoint_ll(t_idx, ll_acc):
+        t = observation_times[t_idx]
+        timepoints_to_t = jnp.array([0.0, t])
+        emu_mdvs = simulate_inst_mdvs_pure_jax(
+            fluxes_array, concs_array, timepoints_to_t, emu_network, precomputed
+        )
+        sim_mids_t = extract_measurable_mids_from_emu(emu_mdvs)
         ref_mids_t = ref_mids_timecourse[t_idx]
 
         log_ref = jnp.log(jnp.maximum(ref_mids_t, 1e-10))
         log_sim = jnp.log(jnp.maximum(sim_mids_t, 1e-10))
         residuals = (log_ref - log_sim) / mid_std
-        return jnp.sum(
+        ll_t = jnp.sum(
             -0.5 * residuals**2 - jnp.log(mid_std * jnp.sqrt(2 * jnp.pi))
         )
+        return ll_acc + ll_t
 
     # Use fori_loop for JAX-compatible iteration
-    def body_fn(t_idx, ll_acc):
-        return ll_acc + compute_timepoint_ll(t_idx)
-
-    ll_mids = jax.lax.fori_loop(0, len(observation_times), body_fn, 0.0)
+    ll_mids = jax.lax.fori_loop(0, len(observation_times), compute_timepoint_ll, 0.0)
 
     ll_condition = ll_flux + ll_concs + ll_mids
 
-    # Return -inf if either solver failed
-    solver_failed = enzyme_failed | iso_failed
-    return jnp.where(solver_failed, -jnp.inf, ll_condition)
+    # Return -inf if enzyme solver failed
+    return jnp.where(enzyme_failed, -jnp.inf, ll_condition)
 
 
 def compute_log_posterior_jax(
@@ -649,6 +747,8 @@ def compute_log_posterior_jax(
     observation_times,
     prior_mean,
     prior_std,
+    emu_network,
+    precomputed,
 ):
     """JAX-compatible log-posterior for multi-condition MCMC with timecourse MIDs.
 
@@ -674,6 +774,10 @@ def compute_log_posterior_jax(
         Prior mean (log-scale)
     prior_std : float
         Prior std (log-scale)
+    emu_network : dict
+        Serialized EMU network structure
+    precomputed : dict
+        Precomputed matrix structure arrays for JAX tracing
 
     Returns
     -------
@@ -696,7 +800,7 @@ def compute_log_posterior_jax(
     condition_lls = jax.vmap(
         lambda A_e, E_T, rf, rc, rm: compute_condition_likelihood(
             A_e, E_T, rf, rc, rm, param_array, Q_e, P_e,
-            initial_array, observation_times
+            initial_array, observation_times, emu_network, precomputed
         )
     )(
         fixed_params_varying[:, 0],
@@ -718,6 +822,7 @@ def run_mcmc(
     observation_times=None,
     n_warmup=50,
     n_samples=100,
+    n_chains=1,
     seed=42,
 ):
     """Run MCMC sampling with instationary labeling data.
@@ -736,6 +841,8 @@ def run_mcmc(
         Number of warmup iterations
     n_samples : int
         Number of samples to collect
+    n_chains : int
+        Number of independent chains to run
     seed : int
         Random seed
 
@@ -753,7 +860,7 @@ def run_mcmc(
     n_timepoints = len(observation_times)
 
     print("=" * 80)
-    print(f"Running MCMC with INSTATIONARY isotope labeling ({num_conditions} conditions)")
+    print(f"Running MCMC with INSTATIONARY isotope labeling ({num_conditions} conditions, {n_chains} chains)")
     print(f"Observation times: {observation_times}")
     print(f"MIDs per time point: {N_MIDS} (A: 3, Q: 2, P: 2)")
     print("=" * 80)
@@ -811,12 +918,20 @@ def run_mcmc(
     print(f"  initial_array: {initial_array.shape}")
     sys.stdout.flush()
 
+    # Load EMU network
+    print("\nLoading EMU network...")
+    sys.stdout.flush()
+    emu_network, precomputed = get_pure_jax_emu_network()
+    print(f"  EMU network loaded with {len(emu_network['flux_ids_all'])} fluxes")
+    sys.stdout.flush()
+
     # Prior
     param_array_ref = params_dict_to_array(ref_params)
     prior_mean = jnp.log(param_array_ref)
     prior_std = 0.5
 
-    # Log-posterior function
+    # Log-posterior function (JIT-compiled for performance)
+    @jax.jit
     def logdensity_fn(log_param_array):
         return compute_log_posterior_jax(
             log_param_array,
@@ -829,6 +944,8 @@ def run_mcmc(
             observation_times,
             prior_mean,
             prior_std,
+            emu_network,
+            precomputed,
         )
 
     # Initialize
@@ -856,26 +973,46 @@ def run_mcmc(
     print(f"Warmup complete.")
     sys.stdout.flush()
 
-    # Sampling
-    print(f"\nCollecting {n_samples} samples...")
+    # Sampling with multiple chains
+    print(f"\nCollecting {n_samples} samples from {n_chains} chains...")
     sys.stdout.flush()
 
-    samples = []
-    log_probs = []
+    # JIT-compile the kernel step for efficiency
+    @jax.jit
+    def one_step(carry, _):
+        state, key = carry
+        key, subkey = jax.random.split(key)
+        state, info = kernel(subkey, state)
+        return (state, key), (state.position, -state.potential_energy)
 
-    for i in range(n_samples):
-        rng_key, sample_key = jax.random.split(rng_key)
-        state, info = kernel(sample_key, state)
-        samples.append(state.position)
-        log_probs.append(-state.potential_energy)
+    # Run each chain
+    all_chain_samples = []
+    all_chain_log_probs = []
 
-        if (i + 1) % 100 == 0:
-            print(f"  Collected {i + 1}/{n_samples} samples")
-            sys.stdout.flush()
+    for chain_idx in range(n_chains):
+        rng_key, chain_key = jax.random.split(rng_key)
 
-    log_samples = jnp.stack(samples)
-    log_probs = jnp.array(log_probs)
+        # Initialize chain state (use warmup state as starting point)
+        chain_state = state
+
+        # Run sampling using scan for efficiency
+        (final_state, _), (chain_positions, chain_log_probs) = jax.lax.scan(
+            one_step, (chain_state, chain_key), None, length=n_samples
+        )
+
+        all_chain_samples.append(chain_positions)
+        all_chain_log_probs.append(chain_log_probs)
+
+        print(f"  Chain {chain_idx + 1}/{n_chains} complete")
+        sys.stdout.flush()
+
+    # Stack samples: shape (n_chains, n_samples, n_params)
+    log_samples = jnp.stack(all_chain_samples)
+    log_probs = jnp.stack(all_chain_log_probs)
     samples = jnp.exp(log_samples)
+
+    # Flatten chains for summary: shape (n_chains * n_samples, n_params)
+    samples_flat = samples.reshape(-1, samples.shape[-1])
 
     # Summary
     print("\n" + "=" * 80)
@@ -883,17 +1020,20 @@ def run_mcmc(
     print("=" * 80)
 
     results = {
-        "samples": samples,
+        "samples": samples,  # Shape (n_chains, n_samples, n_params)
+        "samples_flat": samples_flat,  # Shape (n_chains * n_samples, n_params)
         "log_samples": log_samples,
         "log_probs": log_probs,
         "param_names": MCMC_PARAM_NAMES,
         "reference": param_array_ref,
+        "n_chains": n_chains,
+        "n_samples": n_samples,
     }
 
-    print(f"\nParameter estimates (mean ± std, natural scale):")
+    print(f"\nParameter estimates (mean ± std, natural scale, {n_chains} chains × {n_samples} samples):")
     for i, name in enumerate(MCMC_PARAM_NAMES):
-        mean = float(jnp.mean(samples[:, i]))
-        std = float(jnp.std(samples[:, i]))
+        mean = float(jnp.mean(samples_flat[:, i]))
+        std = float(jnp.std(samples_flat[:, i]))
         true_val = float(param_array_ref[i])
         print(f"  {name:10s}: {mean:8.4f} ± {std:6.4f}  (true: {true_val:.4f})")
 

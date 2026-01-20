@@ -27,13 +27,27 @@ def load_results():
     for name, path in simulations.items():
         if path.exists():
             data = np.load(path, allow_pickle=True)
+            samples = data["samples"]
+            log_samples = data["log_samples"]
+
+            # Handle different array shapes:
+            # (n_samples, n_params) or (n_chains, n_samples, n_params)
+            if samples.ndim == 3:
+                # Flatten chains: (n_chains, n_samples, n_params) -> (n_chains*n_samples, n_params)
+                n_chains, n_samples, n_params = samples.shape
+                samples = samples.reshape(-1, n_params)
+                log_samples = log_samples.reshape(-1, n_params)
+                total_samples = n_chains * n_samples
+            else:
+                total_samples = samples.shape[0]
+
             results[name] = {
-                "samples": data["samples"],
-                "log_samples": data["log_samples"],
+                "samples": samples,
+                "log_samples": log_samples,
                 "param_names": data["param_names"],
                 "reference": data["reference"],
             }
-            print(f"Loaded {name}: {data['samples'].shape[0]} samples")
+            print(f"Loaded {name}: {total_samples} samples")
         else:
             print(f"Warning: {path} not found, skipping {name}")
 
@@ -133,6 +147,9 @@ def main():
     ax.set_xticklabels(param_names, rotation=45, ha='right', fontsize=10)
     ax.set_ylabel('log(parameter value)', fontsize=12, fontweight='bold')
     ax.set_xlabel('Parameter', fontsize=12, fontweight='bold')
+
+    # Add legend
+    ax.legend(loc='upper right', fontsize=10)
 
     # Tight layout
     plt.tight_layout()
