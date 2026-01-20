@@ -760,8 +760,9 @@ def run_mcmc(
     ref_params,
     initial,
     conditions=None,
-    n_warmup=200,
-    n_samples=200,
+    n_warmup=300,
+    n_samples=300,
+    n_chains=2,
     seed=42,
 ):
     """Run MCMC sampling using blackjax NUTS with multiple experimental conditions.
@@ -777,7 +778,9 @@ def run_mcmc(
     n_warmup : int
         Number of warmup iterations
     n_samples : int
-        Number of samples to collect
+        Number of samples to collect per chain
+    n_chains : int
+        Number of parallel chains to run
     seed : int
         Random seed
 
@@ -792,7 +795,7 @@ def run_mcmc(
     num_conditions = len(conditions)
 
     print("=" * 80)
-    print(f"Running MCMC with blackjax NUTS ({num_conditions} conditions, no isotope labeling)")
+    print(f"Running MCMC with blackjax NUTS ({num_conditions} conditions, {n_chains} chains, no isotope labeling)")
     print("=" * 80)
     print(f"\nExperimental conditions:")
     for i, cond in enumerate(conditions):
@@ -888,28 +891,38 @@ def run_mcmc(
     print(f"Warmup complete.")
     sys.stdout.flush()
 
-    # Sampling loop
-    print(f"\nCollecting {n_samples} samples...")
+    # Sampling with multiple chains using vmap for parallelism
+    print(f"\nCollecting {n_samples} samples from {n_chains} chains (parallel via vmap)...")
     sys.stdout.flush()
 
-    samples = []
-    log_probs = []
+    # Define single chain sampling function
+    def run_single_chain(chain_key, initial_state):
+        """Run sampling for a single chain."""
+        @jax.jit
+        def one_step(carry, _):
+            state, key = carry
+            key, subkey = jax.random.split(key)
+            state, info = kernel(subkey, state)
+            return (state, key), (state.position, -state.potential_energy)
 
-    for i in range(n_samples):
-        rng_key, sample_key = jax.random.split(rng_key)
-        state, info = kernel(sample_key, state)
-        samples.append(state.position)
-        # potential_energy is -log_density
-        log_probs.append(-state.potential_energy)
+        (final_state, _), (positions, log_probs) = jax.lax.scan(
+            one_step, (initial_state, chain_key), None, length=n_samples
+        )
+        return positions, log_probs
 
-        if (i + 1) % 100 == 0:
-            print(f"  Collected {i + 1}/{n_samples} samples")
-            sys.stdout.flush()
+    # Generate keys for each chain
+    chain_keys = jax.random.split(rng_key, n_chains)
 
-    log_samples = jnp.stack(samples)
-    log_probs = jnp.array(log_probs)
+    # Use vmap to run all chains in parallel
+    # All chains start from the same adapted state
+    run_chains_parallel = jax.vmap(run_single_chain, in_axes=(0, None))
+    log_samples, log_probs = run_chains_parallel(chain_keys, state)
+
+    print(f"  All {n_chains} chains complete (parallel execution)")
+    sys.stdout.flush()
 
     # Transform samples back to natural scale
+    # Shape: (n_chains, n_samples, n_params)
     samples = jnp.exp(log_samples)
 
     # Compute summary statistics
@@ -917,18 +930,26 @@ def run_mcmc(
     print("MCMC Results Summary")
     print("=" * 80)
 
+    # Flatten chains for summary: shape (n_chains * n_samples, n_params)
+    samples_flat = samples.reshape(-1, samples.shape[-1])
+    log_samples_flat = log_samples.reshape(-1, log_samples.shape[-1])
+    log_probs_flat = log_probs.reshape(-1)
+
     results = {
-        "samples": samples,  # Natural scale
+        "samples": samples,  # Natural scale, shape (n_chains, n_samples, n_params)
+        "samples_flat": samples_flat,  # Flattened
         "log_samples": log_samples,  # Log scale
         "log_probs": log_probs,
         "param_names": MCMC_PARAM_NAMES,
         "reference": param_array_ref,
+        "n_chains": n_chains,
+        "n_samples": n_samples,
     }
 
-    print(f"\nParameter estimates (mean ± std, natural scale):")
+    print(f"\nParameter estimates (mean ± std, natural scale, {n_chains} chains × {n_samples} samples):")
     for i, name in enumerate(MCMC_PARAM_NAMES):
-        mean = float(jnp.mean(samples[:, i]))
-        std = float(jnp.std(samples[:, i]))
+        mean = float(jnp.mean(samples_flat[:, i]))
+        std = float(jnp.std(samples_flat[:, i]))
         true_val = float(param_array_ref[i])
         print(f"  {name:10s}: {mean:8.4f} ± {std:6.4f}  (true: {true_val:.4f})")
 

@@ -1788,9 +1788,9 @@ def run_mcmc(
     ref_params,
     initial,
     conditions=None,
-    n_warmup=200,
-    n_samples=200,
-    n_chains=1,
+    n_warmup=300,
+    n_samples=300,
+    n_chains=2,
     seed=42,
     use_pure_jax_emu=True,
 ):
@@ -1957,42 +1957,34 @@ def run_mcmc(
     print(f"Warmup complete.")
     sys.stdout.flush()
 
-    # Sampling with multiple chains
-    print(f"\nCollecting {n_samples} samples from {n_chains} chains...")
+    # Sampling with multiple chains using vmap for parallelism
+    print(f"\nCollecting {n_samples} samples from {n_chains} chains (parallel via vmap)...")
     sys.stdout.flush()
 
-    # JIT-compile the kernel step for efficiency
-    @jax.jit
-    def one_step(carry, _):
-        state, key = carry
-        key, subkey = jax.random.split(key)
-        state, info = kernel(subkey, state)
-        return (state, key), (state.position, -state.potential_energy)
+    # Define single chain sampling function
+    def run_single_chain(chain_key, initial_state):
+        """Run sampling for a single chain."""
+        @jax.jit
+        def one_step(carry, _):
+            state, key = carry
+            key, subkey = jax.random.split(key)
+            state, info = kernel(subkey, state)
+            return (state, key), (state.position, -state.potential_energy)
 
-    # Run each chain
-    all_chain_samples = []
-    all_chain_log_probs = []
-
-    for chain_idx in range(n_chains):
-        rng_key, chain_key = jax.random.split(rng_key)
-
-        # Initialize chain state (use warmup state as starting point)
-        chain_state = state
-
-        # Run sampling using scan for efficiency
-        (final_state, _), (chain_positions, chain_log_probs) = jax.lax.scan(
-            one_step, (chain_state, chain_key), None, length=n_samples
+        (final_state, _), (positions, log_probs) = jax.lax.scan(
+            one_step, (initial_state, chain_key), None, length=n_samples
         )
+        return positions, log_probs
 
-        all_chain_samples.append(chain_positions)
-        all_chain_log_probs.append(chain_log_probs)
+    # Generate keys for each chain
+    chain_keys = jax.random.split(rng_key, n_chains)
 
-        print(f"  Chain {chain_idx + 1}/{n_chains} complete")
-        sys.stdout.flush()
+    # Use vmap to run all chains in parallel
+    # All chains start from the same adapted state
+    run_chains_parallel = jax.vmap(run_single_chain, in_axes=(0, None))
+    log_samples, log_probs = run_chains_parallel(chain_keys, state)
 
-    # Stack samples: shape (n_chains, n_samples, n_params)
-    log_samples = jnp.stack(all_chain_samples)
-    log_probs = jnp.stack(all_chain_log_probs)
+    print(f"  All {n_chains} chains complete (parallel execution)")
 
     # Transform samples back to natural scale
     samples = jnp.exp(log_samples)
