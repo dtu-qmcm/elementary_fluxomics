@@ -29,3 +29,14 @@ $$
 ln(\frac{v^{m \rightarrow n} - v_{net}}{v^{m \rightarrow n}}) \geq ln(\frac{v^{f} - v_{net}}{v^{f}})
 $$
 
+$$
+\frac{R^{B \leftrightarrow Q}}{R^{A \leftrightarrow P}}
+$$
+
+\begin{equation}\label{figure 1 g3p}
+R^{fdp_{def} \leftrightarrow g3p_{abc}}
+\end{equation}
+
+\begin{equation}\label{figure 1 dhap}
+R^{fdp_{abc} \leftrightarrow dhap_{abc}}
+\end{equation}

@@ -59,8 +59,8 @@ REACTIONS_FILE = PROJECT_ROOT / "models" / "simple_network" / "reactions.tsv"
 RESULTS_DIR = PROJECT_ROOT / "results" / "enzyme_simulation_instationary"
 
 
-# Observation time points for instationary labeling
-OBSERVATION_TIMES = jnp.array([0.5, 2.0, 10.0, 50.0])
+# Observation time points for instationary labeling (10 log-spaced from 1e-2 to 1e2)
+OBSERVATION_TIMES = jnp.logspace(-2, 2, 10)
 N_TIMEPOINTS = len(OBSERVATION_TIMES)
 
 # Number of MID values per time point (A: 3, Q: 2, P: 2 = 7 total)
@@ -107,8 +107,8 @@ np.random.seed(12345)
 EXPERIMENTAL_CONDITIONS = [
     {"E_T": float(E_T), "A_e": float(A_e)}
     for E_T, A_e in zip(
-        np.random.uniform(0.5, 2.0, 5),  # E_T varies from 0.5 to 2.0
-        np.random.uniform(2.0, 10.0, 5),  # A_e varies from 2.0 to 10.0
+        np.exp(np.random.normal(1, 0.5, 10)),  # E_T log-normal: mean=e, SD=0.5 on log-scale
+        np.exp(np.random.normal(1, 0.5, 10)),  # A_e log-normal: mean=e, SD=0.5 on log-scale
     )
 ]
 NUM_CONDITIONS = len(EXPERIMENTAL_CONDITIONS)
@@ -820,8 +820,8 @@ def run_mcmc(
     initial,
     conditions=None,
     observation_times=None,
-    n_warmup=300,
-    n_samples=300,
+    n_warmup=100,
+    n_samples=100,
     n_chains=2,
     seed=42,
 ):
@@ -925,10 +925,12 @@ def run_mcmc(
     print(f"  EMU network loaded with {len(emu_network['flux_ids_all'])} fluxes")
     sys.stdout.flush()
 
-    # Prior
+    # Prior: log-normal with means randomly perturbed around true values
     param_array_ref = params_dict_to_array(ref_params)
-    prior_mean = jnp.log(param_array_ref)
-    prior_std = 0.5
+    # Generate random prior means (log-normally distributed around true values, scale=1)
+    np.random.seed(54321)  # Fixed seed for reproducibility across experiments
+    prior_mean = jnp.log(param_array_ref) + np.random.normal(0, 1, len(param_array_ref))
+    prior_std = 1.0  # Scale parameter of 1
 
     # Log-posterior function (JIT-compiled for performance)
     @jax.jit
@@ -1007,6 +1009,24 @@ def run_mcmc(
     # Shape: (n_chains, n_samples, n_params)
     samples = jnp.exp(log_samples)
 
+    # Compute R-hat (Gelman-Rubin diagnostic) for convergence
+    def compute_rhat(chains):
+        """Compute R-hat for each parameter from multiple chains."""
+        n_chains, n_samples, n_params = chains.shape
+        rhats = []
+        for p in range(n_params):
+            param_chains = chains[:, :, p]
+            chain_vars = jnp.var(param_chains, axis=1, ddof=1)
+            W = jnp.mean(chain_vars)
+            chain_means = jnp.mean(param_chains, axis=1)
+            B = n_samples * jnp.var(chain_means, ddof=1)
+            var_plus = ((n_samples - 1) * W + B) / n_samples
+            rhat = jnp.sqrt(var_plus / W) if W > 0 else jnp.nan
+            rhats.append(float(rhat))
+        return jnp.array(rhats)
+
+    rhats = compute_rhat(log_samples)
+
     # Flatten chains for summary: shape (n_chains * n_samples, n_params)
     samples_flat = samples.reshape(-1, samples.shape[-1])
 
@@ -1024,14 +1044,16 @@ def run_mcmc(
         "reference": param_array_ref,
         "n_chains": n_chains,
         "n_samples": n_samples,
+        "rhats": np.array(rhats),
     }
 
-    print(f"\nParameter estimates (mean ± std, natural scale, {n_chains} chains × {n_samples} samples):")
+    print(f"\nParameter estimates (mean ± std, R-hat, natural scale, {n_chains} chains × {n_samples} samples):")
     for i, name in enumerate(MCMC_PARAM_NAMES):
         mean = float(jnp.mean(samples_flat[:, i]))
         std = float(jnp.std(samples_flat[:, i]))
         true_val = float(param_array_ref[i])
-        print(f"  {name:10s}: {mean:8.4f} ± {std:6.4f}  (true: {true_val:.4f})")
+        rhat = float(rhats[i])
+        print(f"  {name:10s}: {mean:8.4f} ± {std:6.4f}  (true: {true_val:.4f}, R-hat: {rhat:.3f})")
 
     sys.stdout.flush()
 
@@ -1083,6 +1105,7 @@ def main():
         log_probs=mcmc_results["log_probs"],
         param_names=mcmc_results["param_names"],
         reference=mcmc_results["reference"],
+        rhats=mcmc_results["rhats"],
     )
     print(f"\nResults saved to {output_dir / 'mcmc_results.npz'}")
     sys.stdout.flush()

@@ -1,5 +1,6 @@
 #reaction_ID	reactant_IDs(atom)	product_IDs(atom)	reversibility
 v1	A_ext(ab)	A(ab)	0
+v1_out	A(ab)	A_sink(ab)	0
 v2_f	A(ab)	EA(ab)	0
 v2_b	EA(ab)	A(ab)	0
 v3_f	EA(ab)	EPQ(ab)	0

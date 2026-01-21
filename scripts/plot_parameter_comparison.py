@@ -41,13 +41,20 @@ def load_results():
             else:
                 total_samples = samples.shape[0]
 
+            # Load R-hat values if available
+            rhats = data.get("rhats", None)
+            if rhats is not None:
+                rhats = np.array(rhats)
+
             results[name] = {
                 "samples": samples,
                 "log_samples": log_samples,
                 "param_names": data["param_names"],
                 "reference": data["reference"],
+                "rhats": rhats,
             }
-            print(f"Loaded {name}: {total_samples} samples")
+            rhat_info = f", R-hat: {rhats.min():.3f}-{rhats.max():.3f}" if rhats is not None else ""
+            print(f"Loaded {name}: {total_samples} samples{rhat_info}")
         else:
             print(f"Warning: {path} not found, skipping {name}")
 
@@ -112,6 +119,13 @@ def main():
         offset = offsets[idx]
         color = colors.get(sim_name, "gray")
 
+        # Create label with R-hat range if available
+        rhats = sim_data.get("rhats")
+        if rhats is not None:
+            label = f"{sim_name} (R̂: {rhats.min():.2f}-{rhats.max():.2f})"
+        else:
+            label = sim_name
+
         ax.errorbar(
             x_positions + offset,
             median,
@@ -122,7 +136,7 @@ def main():
             capthick=1.5,
             linewidth=1.5,
             markersize=6,
-            label=sim_name,
+            label=label,
         )
 
     # Add horizontal gray lines for true values (log scale)
