@@ -37,9 +37,9 @@ RESULTS_DIR = PROJECT_DIR / "results" / "gibbs_landscape_2d"
 # Gas constant in kJ/(mol*K)
 R = 8.314e-3
 
-# Timepoints: 100 points logarithmically spaced from 1e-3s to 1e1s, plus final at 1e3s
-TIMEPOINTS = list(np.logspace(np.log10(1e-3), np.log10(1e1), 100)) + [1e3]
-FINAL_TIMEPOINT = 1e3  # Excluded from timecourse SSR, used only for final SSR
+# Timepoints: 100 points logarithmically spaced from 1e-3s to 1e1s (timecourse only)
+# Steady-state is computed using freeflux SS mode, not long INST simulation
+TIMEPOINTS = list(np.logspace(np.log10(1e-3), np.log10(1e1), 100))
 
 # Target EMUs to compare
 TARGET_EMUS = {
@@ -132,10 +132,12 @@ def load_fluxes_from_toml(flux_filepath):
 
 
 def run_simulation(gibbs_overrides, timepoints):
-    """Run freeflux INST simulation with specified Gibbs energies.
+    """Run INST simulation for timecourse and SS simulation for steady-state.
 
     Returns:
-        Dict of {emu_id: {timepoint: mdv_array}}
+        Tuple of (mdvs_timecourse, mdvs_ss) where:
+        - mdvs_timecourse: dict of {emu_id: {time: mdv}} for timecourse
+        - mdvs_ss: dict of {emu_id: mdv} for steady-state
     """
     model = Model("glycolysis_mech_gly3p")
     model.read_from_file(str(REACTIONS_FILE))
@@ -147,6 +149,19 @@ def run_simulation(gibbs_overrides, timepoints):
         fid.rsplit("_", 1)[0] for fid in model.totalfluxids if fid.endswith("_f")
     }
 
+    # Build flux dict for reuse in both INST and SS simulations
+    fluxes = {}
+    for rxn_id, v_net in net_fluxes.items():
+        deltaG = thermo.get(rxn_id, -5.0)
+
+        if rxn_id in reversible_rxns:
+            v_f, v_b = net_to_forward_backward(v_net, deltaG, temperature)
+            fluxes[f"{rxn_id}_f"] = v_f
+            fluxes[f"{rxn_id}_b"] = v_b
+        else:
+            fluxes[rxn_id] = v_net
+
+    # 1. INST simulation for timecourse
     with model.simulator("inst") as isim:
         isim.set_target_EMUs(TARGET_EMUS)
         isim.set_timepoints(timepoints)
@@ -157,15 +172,8 @@ def run_simulation(gibbs_overrides, timepoints):
             purity=[1.0],
         )
 
-        for rxn_id, v_net in net_fluxes.items():
-            deltaG = thermo.get(rxn_id, -5.0)
-
-            if rxn_id in reversible_rxns:
-                v_f, v_b = net_to_forward_backward(v_net, deltaG, temperature)
-                isim.set_flux(f"{rxn_id}_f", v_f)
-                isim.set_flux(f"{rxn_id}_b", v_b)
-            else:
-                isim.set_flux(rxn_id, v_net)
+        for flux_id, value in fluxes.items():
+            isim.set_flux(flux_id, value)
 
         for metab in model.metabolites:
             if metab == "FBA_dhap":
@@ -176,15 +184,35 @@ def run_simulation(gibbs_overrides, timepoints):
         isim.prepare(n_jobs=1)
         res = isim.simulate()
 
-        mdvs = {}
+        mdvs_timecourse = {}
         for emu_id in res.simulated_EMUs:
             mdv_result = res.simulated_MDV(emu_id)
-            mdvs[emu_id] = {t: np.array(mdv_result[t]) for t in res.timepoints if t > 0}
+            mdvs_timecourse[emu_id] = {t: np.array(mdv_result[t]) for t in res.timepoints if t > 0}
 
-        return mdvs
+    # 2. SS simulation for steady-state (algebraic solution)
+    with model.simulator("ss") as ssim:
+        ssim.set_target_EMUs(TARGET_EMUS)
+        ssim.set_labeling_strategy(
+            "Glc_ext",
+            labeling_pattern=["110000"],
+            percentage=[1.0],
+            purity=[1.0],
+        )
+
+        for flux_id, value in fluxes.items():
+            ssim.set_flux(flux_id, value)
+
+        ssim.prepare(n_jobs=1)
+        res_ss = ssim.simulate()
+
+        mdvs_ss = {}
+        for emu_id in res_ss.simulated_EMUs:
+            mdvs_ss[emu_id] = np.array(res_ss.simulated_MDV(emu_id))
+
+    return mdvs_timecourse, mdvs_ss
 
 
-def compute_nll(mdvs_ref, mdvs_test, scale, exclude_timepoint=None):
+def compute_nll(mdvs_ref, mdvs_test, scale):
     """Compute negative log-likelihood between two sets of MDVs using log-normal error.
 
     Uses jax.scipy.stats.norm.logpdf on log-transformed values.
@@ -193,7 +221,6 @@ def compute_nll(mdvs_ref, mdvs_test, scale, exclude_timepoint=None):
         mdvs_ref: Reference MDV values {emu_id: {timepoint: mdv_array}}
         mdvs_test: Test MDV values {emu_id: {timepoint: mdv_array}}
         scale: Log-normal scale parameter
-        exclude_timepoint: Optional timepoint to exclude from calculation
 
     Returns:
         Total negative log-likelihood
@@ -205,9 +232,6 @@ def compute_nll(mdvs_ref, mdvs_test, scale, exclude_timepoint=None):
             continue
         for t in mdvs_ref[emu_id]:
             if t not in mdvs_test[emu_id]:
-                continue
-            # Skip excluded timepoint
-            if exclude_timepoint is not None and abs(t - exclude_timepoint) < 1e-6:
                 continue
             mdv_ref = mdvs_ref[emu_id][t]
             mdv_test = mdvs_test[emu_id][t]
@@ -229,35 +253,25 @@ def compute_nll(mdvs_ref, mdvs_test, scale, exclude_timepoint=None):
     return total_nll
 
 
-def compute_nll_final_timepoint(mdvs_ref, mdvs_test, scale):
-    """Compute negative log-likelihood at the final timepoint using log-normal error.
+def compute_nll_ss(mdvs_ref_ss, mdvs_test_ss, scale):
+    """Compute negative log-likelihood between two sets of steady-state MDVs.
 
     Args:
-        mdvs_ref: Reference MDV values {emu_id: {timepoint: mdv_array}}
-        mdvs_test: Test MDV values {emu_id: {timepoint: mdv_array}}
+        mdvs_ref_ss: Reference SS MDVs {emu_id: mdv_array}
+        mdvs_test_ss: Test SS MDVs {emu_id: mdv_array}
         scale: Log-normal scale parameter
 
     Returns:
-        Total negative log-likelihood at final timepoint
+        Total negative log-likelihood at steady-state
     """
     total_nll = 0.0
 
-    for emu_id in mdvs_ref:
-        if emu_id not in mdvs_test:
+    for emu_id in mdvs_ref_ss:
+        if emu_id not in mdvs_test_ss:
             continue
 
-        # Get final timepoint for this EMU
-        ref_times = sorted(mdvs_ref[emu_id].keys())
-        test_times = sorted(mdvs_test[emu_id].keys())
-
-        if not ref_times or not test_times:
-            continue
-
-        t_final_ref = ref_times[-1]
-        t_final_test = test_times[-1]
-
-        mdv_ref = mdvs_ref[emu_id][t_final_ref]
-        mdv_test = mdvs_test[emu_id][t_final_test]
+        mdv_ref = mdvs_ref_ss[emu_id]
+        mdv_test = mdvs_test_ss[emu_id]
 
         # Normalize MDVs
         mdv_ref = np.maximum(mdv_ref, 0.0)
@@ -289,17 +303,15 @@ def run_2d_scan(dG1_values, dG2_values, timepoints):
     sys.stdout.flush()
 
     ref_overrides = {"FBA1": REFERENCE_FBA1, "FBA2": REFERENCE_FBA2}
-    mdvs_ref = run_simulation(ref_overrides, timepoints)
+    mdvs_ref_tc, mdvs_ref_ss = run_simulation(ref_overrides, timepoints)
 
     # Compute reference NLL (reference vs itself)
     print("Computing reference NLL (reference vs itself)...")
     sys.stdout.flush()
-    ref_nll_timecourse = compute_nll(
-        mdvs_ref, mdvs_ref, LOGNORMAL_SCALE, exclude_timepoint=FINAL_TIMEPOINT
-    )
-    ref_nll_final = compute_nll_final_timepoint(mdvs_ref, mdvs_ref, LOGNORMAL_SCALE)
+    ref_nll_timecourse = compute_nll(mdvs_ref_tc, mdvs_ref_tc, LOGNORMAL_SCALE)
+    ref_nll_final = compute_nll_ss(mdvs_ref_ss, mdvs_ref_ss, LOGNORMAL_SCALE)
     ref_nll = {"timecourse": ref_nll_timecourse, "final": ref_nll_final}
-    print(f"  Reference NLL - Timecourse: {ref_nll_timecourse:.2f}, Final: {ref_nll_final:.2f}")
+    print(f"  Reference NLL - Timecourse: {ref_nll_timecourse:.2f}, SS: {ref_nll_final:.2f}")
 
     results = []
     total = len(dG1_values) * len(dG2_values)
@@ -314,17 +326,13 @@ def run_2d_scan(dG1_values, dG2_values, timepoints):
             thermo_overrides = {"FBA1": dG1, "FBA2": dG2}
 
             try:
-                mdvs_test = run_simulation(thermo_overrides, timepoints)
+                mdvs_test_tc, mdvs_test_ss = run_simulation(thermo_overrides, timepoints)
 
                 # Calculate NLL over full timecourse
-                nll_timecourse = compute_nll(
-                    mdvs_ref, mdvs_test, LOGNORMAL_SCALE, exclude_timepoint=FINAL_TIMEPOINT
-                )
+                nll_timecourse = compute_nll(mdvs_ref_tc, mdvs_test_tc, LOGNORMAL_SCALE)
 
-                # Calculate NLL at final timepoint
-                nll_final = compute_nll_final_timepoint(
-                    mdvs_ref, mdvs_test, LOGNORMAL_SCALE
-                )
+                # Calculate NLL at steady-state
+                nll_final = compute_nll_ss(mdvs_ref_ss, mdvs_test_ss, LOGNORMAL_SCALE)
 
             except Exception as e:
                 print(f"    Error: {e}")
@@ -447,13 +455,13 @@ def main():
         output_dir / "gibbs_landscape_2d_timecourse.png",
     )
 
-    # Plot final timepoint NLL landscape
-    print("  Creating final timepoint NLL landscape plot...")
+    # Plot steady-state NLL landscape
+    print("  Creating steady-state NLL landscape plot...")
     sys.stdout.flush()
     plot_landscape(
         df,
         "nll_final",
-        "(Final Timepoint Only)",
+        "(Steady-State)",
         output_dir / "gibbs_landscape_2d_final.png",
     )
 
@@ -464,7 +472,7 @@ def main():
 
     print(f"\nReference NLL (reference vs itself):")
     print(f"  Timecourse: {ref_nll['timecourse']:.2f}")
-    print(f"  Final: {ref_nll['final']:.2f}")
+    print(f"  Steady-State: {ref_nll['final']:.2f}")
 
     print("\nTimecourse NLL Summary:")
     min_idx = df["nll_timecourse"].idxmin()
@@ -474,7 +482,7 @@ def main():
     )
     print(f"  Max: {df['nll_timecourse'].max():.2f}")
 
-    print("\nFinal Timepoint NLL Summary:")
+    print("\nSteady-State NLL Summary:")
     min_idx = df["nll_final"].idxmin()
     print(
         f"  Min: {df['nll_final'].min():.2f} at "

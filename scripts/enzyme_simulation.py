@@ -43,6 +43,7 @@ import jax.numpy as jnp
 import diffrax
 from diffrax import SteadyStateEvent
 import blackjax
+from jax_tqdm import scan_tqdm
 
 try:
     from scripts.isotopomer_simulation import isotopomer_ode, enzyme_ode
@@ -1788,8 +1789,8 @@ def run_mcmc(
     ref_params,
     initial,
     conditions=None,
-    n_warmup=100,
-    n_samples=100,
+    n_warmup=400,
+    n_samples=400,
     n_chains=2,
     seed=42,
     use_pure_jax_emu=True,
@@ -1891,12 +1892,13 @@ def run_mcmc(
         for rd in ref_data_list
     ])  # Shape: (num_conditions, 7) - measurable metabolites only
 
-    # Prior: log-normal with means randomly perturbed around true values
+    # Generic prior: all true parameter values within 2 standard deviations
+    # Range in log-space: -2.3 (k_ex=0.1) to 5.5 (k2r=250)
+    # Center at log(5)≈1.6, std=2.0 covers range within 2 std devs
     param_array_ref = params_dict_to_array(ref_params)
-    # Generate random prior means (log-normally distributed around true values, scale=1)
-    np.random.seed(54321)  # Fixed seed for reproducibility across experiments
-    prior_mean = jnp.log(param_array_ref) + np.random.normal(0, 1, len(param_array_ref))
-    prior_std = 1.0  # Scale parameter of 1
+    n_params = len(param_array_ref)
+    prior_mean = jnp.ones(n_params) * 1.6  # log(5) ≈ 1.6
+    prior_std = 2.0
 
     # Log-posterior function (JAX-compatible, takes log-transformed params)
     if use_pure_jax_emu:
@@ -1963,10 +1965,10 @@ def run_mcmc(
     print(f"\nCollecting {n_samples} samples from {n_chains} chains (parallel via vmap)...")
     sys.stdout.flush()
 
-    # Define single chain sampling function
+    # Define single chain sampling function with progress bar
     def run_single_chain(chain_key, initial_state):
-        """Run sampling for a single chain."""
-        @jax.jit
+        """Run sampling for a single chain with progress bar."""
+        @scan_tqdm(n_samples, print_rate=10)
         def one_step(carry, _):
             state, key = carry
             key, subkey = jax.random.split(key)
@@ -1974,7 +1976,7 @@ def run_mcmc(
             return (state, key), (state.position, -state.potential_energy)
 
         (final_state, _), (positions, log_probs) = jax.lax.scan(
-            one_step, (initial_state, chain_key), None, length=n_samples
+            one_step, (initial_state, chain_key), jnp.arange(n_samples)
         )
         return positions, log_probs
 

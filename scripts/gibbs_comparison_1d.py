@@ -34,9 +34,9 @@ RESULTS_DIR = PROJECT_DIR / "results" / "gibbs_comparison_1d"
 # Gas constant in kJ/(mol*K)
 R = 8.314e-3
 
-# Timepoints: 100 points logarithmically spaced from 1e-3s to 1e1s, plus final at 1e3s
-TIMEPOINTS = list(np.logspace(-3, 1, 100)) + [1e3]
-FINAL_TIMEPOINT = 1e3  # Excluded from timecourse SSR
+# Timepoints: 100 points logarithmically spaced from 1e-3s to 1e1s (timecourse only)
+# Steady-state is computed using freeflux SS mode, not long INST simulation
+TIMEPOINTS = list(np.logspace(-3, 1, 100))
 
 # Target EMUs to compare
 TARGET_EMUS = {
@@ -91,7 +91,13 @@ def net_to_forward_backward(v_net, deltaG_prime, temperature):
 
 
 def run_simulation(model_dir, model_name, thermo_overrides=None):
-    """Run forward simulation and return MDVs."""
+    """Run INST simulation for timecourse and SS simulation for steady-state.
+
+    Returns:
+        Tuple of (mdvs_timecourse, mdvs_ss) where:
+        - mdvs_timecourse: dict of {emu_id: {time: mdv}} for timecourse
+        - mdvs_ss: dict of {emu_id: mdv} for steady-state
+    """
     model = Model(model_name)
     model.read_from_file(str(model_dir / "reactions.tsv"))
 
@@ -107,6 +113,36 @@ def run_simulation(model_dir, model_name, thermo_overrides=None):
                 thermo_data["reactions"][rxn_id] = {}
             thermo_data["reactions"][rxn_id]["deltaG_prime"] = dG
 
+    # Build flux dict for reuse in both INST and SS simulations
+    reversible_rxns = {
+        fid.rsplit("_", 1)[0] for fid in model.totalfluxids if fid.endswith("_f")
+    }
+    conversion_factor = 1000 / 3600
+
+    fluxes = {}
+    for section in ["external_fluxes", "internal_fluxes"]:
+        if section in flux_data:
+            for rxn_id, value in flux_data[section].items():
+                if rxn_id == "glc_uptake":
+                    rxn_id = "glc_input"
+                elif rxn_id == "pyr_secretion":
+                    continue
+
+                v_net = value * conversion_factor
+                deltaG = (
+                    thermo_data.get("reactions", {})
+                    .get(rxn_id, {})
+                    .get("deltaG_prime", -5.0)
+                )
+
+                if rxn_id in reversible_rxns:
+                    v_f, v_b = net_to_forward_backward(v_net, deltaG, temperature)
+                    fluxes[f"{rxn_id}_f"] = v_f
+                    fluxes[f"{rxn_id}_b"] = v_b
+                else:
+                    fluxes[rxn_id] = v_net
+
+    # 1. INST simulation for timecourse
     with model.simulator("inst") as isim:
         isim.set_target_EMUs(TARGET_EMUS)
         isim.set_timepoints(TIMEPOINTS)
@@ -117,32 +153,8 @@ def run_simulation(model_dir, model_name, thermo_overrides=None):
             purity=[1.0],
         )
 
-        reversible_rxns = {
-            fid.rsplit("_", 1)[0] for fid in model.totalfluxids if fid.endswith("_f")
-        }
-        conversion_factor = 1000 / 3600
-
-        for section in ["external_fluxes", "internal_fluxes"]:
-            if section in flux_data:
-                for rxn_id, value in flux_data[section].items():
-                    if rxn_id == "glc_uptake":
-                        rxn_id = "glc_input"
-                    elif rxn_id == "pyr_secretion":
-                        continue
-
-                    v_net = value * conversion_factor
-                    deltaG = (
-                        thermo_data.get("reactions", {})
-                        .get(rxn_id, {})
-                        .get("deltaG_prime", -5.0)
-                    )
-
-                    if rxn_id in reversible_rxns:
-                        v_f, v_b = net_to_forward_backward(v_net, deltaG, temperature)
-                        isim.set_flux(f"{rxn_id}_f", v_f)
-                        isim.set_flux(f"{rxn_id}_b", v_b)
-                    else:
-                        isim.set_flux(rxn_id, v_net)
+        for flux_id, value in fluxes.items():
+            isim.set_flux(flux_id, value)
 
         for metab in model.metabolites:
             isim.set_concentration(metab, 1.0)
@@ -150,15 +162,35 @@ def run_simulation(model_dir, model_name, thermo_overrides=None):
         isim.prepare(n_jobs=1)
         res = isim.simulate()
 
-        mdvs = {}
+        mdvs_timecourse = {}
         for emu_id in res.simulated_EMUs:
             mdv_result = res.simulated_MDV(emu_id)
-            mdvs[emu_id] = {t: np.array(mdv_result[t]) for t in res.timepoints}
+            mdvs_timecourse[emu_id] = {t: np.array(mdv_result[t]) for t in res.timepoints}
 
-        return mdvs
+    # 2. SS simulation for steady-state (algebraic solution)
+    with model.simulator("ss") as ssim:
+        ssim.set_target_EMUs(TARGET_EMUS)
+        ssim.set_labeling_strategy(
+            "Glc_ext",
+            labeling_pattern=["110000"],
+            percentage=[1.0],
+            purity=[1.0],
+        )
+
+        for flux_id, value in fluxes.items():
+            ssim.set_flux(flux_id, value)
+
+        ssim.prepare(n_jobs=1)
+        res_ss = ssim.simulate()
+
+        mdvs_ss = {}
+        for emu_id in res_ss.simulated_EMUs:
+            mdvs_ss[emu_id] = np.array(res_ss.simulated_MDV(emu_id))
+
+    return mdvs_timecourse, mdvs_ss
 
 
-def compute_nll(mdvs_ref, mdvs_test, scale, exclude_timepoint=None):
+def compute_nll(mdvs_ref, mdvs_test, scale):
     """Compute negative log-likelihood between two sets of MDVs using log-normal error.
 
     Uses jax.scipy.stats.norm.logpdf on log-transformed values.
@@ -170,9 +202,6 @@ def compute_nll(mdvs_ref, mdvs_test, scale, exclude_timepoint=None):
             continue
         for t in mdvs_ref[emu_id]:
             if t not in mdvs_test[emu_id]:
-                continue
-            # Skip excluded timepoint
-            if exclude_timepoint is not None and abs(t - exclude_timepoint) < 1e-6:
                 continue
             mdv_ref = mdvs_ref[emu_id][t]
             mdv_test = mdvs_test[emu_id][t]
@@ -226,6 +255,46 @@ def compute_nll_at_timepoint(mdvs_ref, mdvs_test, scale, target_timepoint):
     return total_nll, per_metabolite
 
 
+def compute_nll_ss(mdvs_ref_ss, mdvs_test_ss, scale):
+    """Compute negative log-likelihood between two sets of steady-state MDVs.
+
+    Args:
+        mdvs_ref_ss: Reference SS MDVs {emu_id: mdv_array}
+        mdvs_test_ss: Test SS MDVs {emu_id: mdv_array}
+        scale: Log-normal scale parameter
+
+    Returns:
+        Tuple of (total_nll, per_metabolite_dict)
+    """
+    total_nll = 0.0
+    per_metabolite = {}
+
+    for emu_id in mdvs_ref_ss:
+        if emu_id not in mdvs_test_ss:
+            continue
+
+        mdv_ref = mdvs_ref_ss[emu_id]
+        mdv_test = mdvs_test_ss[emu_id]
+
+        mdv_ref = np.maximum(mdv_ref, 0.0)
+        mdv_test = np.maximum(mdv_test, 0.0)
+        if np.sum(mdv_ref) > 0:
+            mdv_ref = mdv_ref / np.sum(mdv_ref)
+        if np.sum(mdv_test) > 0:
+            mdv_test = mdv_test / np.sum(mdv_test)
+
+        # Negative log-likelihood using JAX norm.logpdf
+        log_ref = jnp.log(jnp.array(mdv_ref) + EPSILON)
+        log_test = jnp.log(jnp.array(mdv_test) + EPSILON)
+        nll = -float(jnp.sum(jstats.norm.logpdf(log_test, loc=log_ref, scale=scale)))
+
+        met_name = EMU_TO_METABOLITE.get(emu_id, emu_id.split("_")[0])
+        per_metabolite[met_name] = nll
+        total_nll += nll
+
+    return total_nll, per_metabolite
+
+
 def run_1d_scan(dG_values):
     """Run 1D scan over FBA Gibbs energy of non-mechanistic model.
 
@@ -235,22 +304,20 @@ def run_1d_scan(dG_values):
     sys.stdout.flush()
 
     mech_overrides = {"FBA1": -3.0, "FBA2": -2.0}
-    mdvs_mech = run_simulation(MECH_MODEL_DIR, "glycolysis_mech_gly3p", mech_overrides)
+    mdvs_mech_tc, mdvs_mech_ss = run_simulation(
+        MECH_MODEL_DIR, "glycolysis_mech_gly3p", mech_overrides
+    )
 
     # Compute reference NLL (mechanistic model compared to itself)
     print("Computing reference NLL (mechanistic vs itself)...")
     sys.stdout.flush()
-    ref_nll_timecourse = compute_nll(
-        mdvs_mech, mdvs_mech, LOGNORMAL_SCALE, exclude_timepoint=FINAL_TIMEPOINT
-    )
-    ref_nll_final, _ = compute_nll_at_timepoint(
-        mdvs_mech, mdvs_mech, LOGNORMAL_SCALE, FINAL_TIMEPOINT
-    )
+    ref_nll_timecourse = compute_nll(mdvs_mech_tc, mdvs_mech_tc, LOGNORMAL_SCALE)
+    ref_nll_final, _ = compute_nll_ss(mdvs_mech_ss, mdvs_mech_ss, LOGNORMAL_SCALE)
     ref_nll = {"timecourse": ref_nll_timecourse, "final": ref_nll_final}
-    print(f"  Reference NLL - Timecourse: {ref_nll_timecourse:.2f}, Final: {ref_nll_final:.2f}")
+    print(f"  Reference NLL - Timecourse: {ref_nll_timecourse:.2f}, SS: {ref_nll_final:.2f}")
 
     # Filter timepoints for timecourse analysis
-    filtered_timepoints = [t for t in TIMEPOINTS if t > 0 and abs(t - FINAL_TIMEPOINT) > 1e-6]
+    filtered_timepoints = [t for t in TIMEPOINTS if t > 0]
 
     aggregated_results = []
     timecourse_results = []
@@ -263,18 +330,16 @@ def run_1d_scan(dG_values):
         thermo_overrides = {"FBA": dG}
 
         try:
-            mdvs_std = run_simulation(STD_MODEL_DIR, "glycolysis_gly3p", thermo_overrides)
-            nll_timecourse = compute_nll(
-                mdvs_mech, mdvs_std, LOGNORMAL_SCALE, exclude_timepoint=FINAL_TIMEPOINT
+            mdvs_std_tc, mdvs_std_ss = run_simulation(
+                STD_MODEL_DIR, "glycolysis_gly3p", thermo_overrides
             )
-            nll_final, _ = compute_nll_at_timepoint(
-                mdvs_mech, mdvs_std, LOGNORMAL_SCALE, FINAL_TIMEPOINT
-            )
+            nll_timecourse = compute_nll(mdvs_mech_tc, mdvs_std_tc, LOGNORMAL_SCALE)
+            nll_final, _ = compute_nll_ss(mdvs_mech_ss, mdvs_std_ss, LOGNORMAL_SCALE)
 
             # Calculate per-timepoint, per-metabolite negative log-likelihood
             for t in filtered_timepoints:
                 total_nll, per_met = compute_nll_at_timepoint(
-                    mdvs_mech, mdvs_std, LOGNORMAL_SCALE, t
+                    mdvs_mech_tc, mdvs_std_tc, LOGNORMAL_SCALE, t
                 )
                 row = {
                     "FBA_deltaG": dG,
@@ -354,7 +419,7 @@ def plot_comparison(df, output_path, ref_nll=None):
 
 
 def plot_final_timepoint(df, output_path, ref_nll=None):
-    """Plot 1D negative log-likelihood comparison for final timepoint."""
+    """Plot 1D negative log-likelihood comparison for steady-state."""
     fig, ax = plt.subplots(figsize=(10, 6))
 
     # Use batlow colormap - different color for final
@@ -367,7 +432,7 @@ def plot_final_timepoint(df, output_path, ref_nll=None):
         linewidth=2,
         markersize=6,
         color=color,
-        label=f"Final timepoint NLL (t={FINAL_TIMEPOINT:.0f}s)",
+        label="Steady-State NLL",
     )
 
     # Mark where FBA dG = -5 (sum of FBA1 + FBA2 = -3 + -2)
@@ -390,7 +455,7 @@ def plot_final_timepoint(df, output_path, ref_nll=None):
         )
 
     ax.set_xlabel("Non-mechanistic FBA dG (kJ/mol)", fontsize=12)
-    ax.set_ylabel("Negative Log-Likelihood (Final Timepoint)", fontsize=12)
+    ax.set_ylabel("Negative Log-Likelihood (Steady-State)", fontsize=12)
 
     ax.legend(loc="best")
     ax.grid(True, alpha=0.3)
@@ -525,8 +590,8 @@ def main():
     sys.stdout.flush()
     plot_comparison(df, output_dir / "gibbs_comparison_1d.png", ref_nll=ref_nll)
 
-    # Plot final timepoint comparison
-    print("  Creating final timepoint comparison plot...")
+    # Plot steady-state comparison
+    print("  Creating steady-state comparison plot...")
     sys.stdout.flush()
     plot_final_timepoint(df, output_dir / "gibbs_comparison_1d_final.png", ref_nll=ref_nll)
 
@@ -549,13 +614,13 @@ def main():
 
     print(f"\nReference NLL (mechanistic model vs itself):")
     print(f"  Timecourse: {ref_nll['timecourse']:.2f}")
-    print(f"  Final: {ref_nll['final']:.2f}")
+    print(f"  Steady-State: {ref_nll['final']:.2f}")
 
     print(f"\nTimecourse Summary (1e-3s to 10s):")
     print(f"  Min NLL: {df['nll_timecourse'].min():.2f} at FBA dG = {df.loc[min_idx_tc, 'FBA_deltaG']:.2f} kJ/mol")
     print(f"  Max NLL: {df['nll_timecourse'].max():.2f}")
 
-    print(f"\nFinal Timepoint Summary (t={FINAL_TIMEPOINT:.0f}s):")
+    print(f"\nSteady-State Summary:")
     print(f"  Min NLL: {df['nll_final'].min():.2f} at FBA dG = {df.loc[min_idx_final, 'FBA_deltaG']:.2f} kJ/mol")
     print(f"  Max NLL: {df['nll_final'].max():.2f}")
 
@@ -563,13 +628,13 @@ def main():
     closest_to_5 = df.iloc[(df["FBA_deltaG"] + 5).abs().argsort()[:1]]
     print(f"\nNegative Log-Likelihood near dG=-5:")
     print(f"  Timecourse: {closest_to_5['nll_timecourse'].values[0]:.2f}")
-    print(f"  Final: {closest_to_5['nll_final'].values[0]:.2f}")
+    print(f"  Steady-State: {closest_to_5['nll_final'].values[0]:.2f}")
 
     print(f"\nGenerated files in: {output_dir}")
     print("  - gibbs_comparison_1d.csv")
     print("  - timecourse_nll.csv")
     print("  - gibbs_comparison_1d.png (timecourse)")
-    print("  - gibbs_comparison_1d_final.png (final timepoint)")
+    print("  - gibbs_comparison_1d_final.png (steady-state)")
     print("  - timecourse_aggregated.png")
     print("  - timecourse_per_metabolite.png")
     sys.stdout.flush()
