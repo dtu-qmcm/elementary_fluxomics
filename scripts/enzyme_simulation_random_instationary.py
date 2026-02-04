@@ -93,9 +93,9 @@ RESULTS_DIR = PROJECT_ROOT / "results" / "enzyme_simulation_random_instationary"
 _PURE_JAX_EMU_NETWORK_RANDOM = None
 
 
-# Observation time points for instationary labeling (5 log-spaced from 10^-0.5 to 10^0.5)
+# Observation time points for instationary labeling (5 log-spaced from 10^-1 to 10^2)
 # MUST match enzyme_simulation_instationary.py for consistent reference data
-OBSERVATION_TIMES = jnp.logspace(-0.5, 0.5, 5)
+OBSERVATION_TIMES = jnp.logspace(-1, 2, 5)
 N_TIMEPOINTS = len(OBSERVATION_TIMES)
 
 # Number of MID values per time point (A: 3, Q: 2, P: 2 = 7 total)
@@ -103,6 +103,7 @@ N_MIDS = 7
 
 
 # Default parameters for the random mechanism
+# Initialized to match ordered mechanism: path 1 (Q first) = ordered, path 2 = same as path 1
 DEFAULT_PARAMS = {
     # External pool concentrations (fixed boundary conditions)
     "A_e": 5.0,          # external A concentration
@@ -117,16 +118,16 @@ DEFAULT_PARAMS = {
     "k2r": 250.0,        # EA -> A + E reverse
     "k3f": 125.0,        # EA -> EPQ forward
     "k3r": 12.5,         # EPQ -> EA reverse
-    # Path 1: Q releases first (EPQ -> EP + Q -> E + P + Q)
-    "k4af": 100.0,       # EPQ -> EP + Q forward
-    "k4ar": 10.0,        # EP + Q -> EPQ reverse
-    "k5af": 75.0,        # EP -> E + P forward
-    "k5ar": 7.5,         # E + P -> EP reverse
-    # Path 2: P releases first (EPQ -> EQ + P -> E + Q + P)
-    "k4bf": 100.0,       # EPQ -> EQ + P forward
-    "k4br": 10.0,        # EQ + P -> EPQ reverse
-    "k5bf": 75.0,        # EQ -> E + Q forward
-    "k5br": 7.5,         # E + Q -> EQ reverse (computed from Wegscheider loop)
+    # Path 1: Q releases first (EPQ -> EP + Q -> E + P + Q) - matches ordered mechanism
+    "k4af": 200.0,       # EPQ -> EP + Q forward (same as ordered k4f)
+    "k4ar": 20.0,        # EP + Q -> EPQ reverse (same as ordered k4r)
+    "k5af": 150.0,       # EP -> E + P forward (same as ordered k5f)
+    "k5ar": 15.0,        # E + P -> EP reverse (same as ordered k5r)
+    # Path 2: P releases first (EPQ -> EQ + P -> E + Q + P) - identical to path 1
+    "k4bf": 200.0,       # EPQ -> EQ + P forward (same as k4af)
+    "k4br": 20.0,        # EQ + P -> EPQ reverse (same as k4ar)
+    "k5bf": 150.0,       # EQ -> E + Q forward (same as k5af)
+    "k5br": 15.0,        # E + Q -> EQ reverse (computed from Wegscheider loop)
     # P <-> Q interconversion
     "k_pq_f": 50.0,      # P -> Q forward
     "k_pq_r": 15.0,      # Q -> P reverse (computed from Wegscheider)
@@ -145,12 +146,22 @@ DEFAULT_INITIAL = {
 }
 
 # Experimental conditions for multi-condition fitting
+# Fixed seed ensures identical conditions across all scripts
+# 5 conditions with varying A_e, E_T, Q_e, P_e
 np.random.seed(12345)
+_n_conditions = 5
 EXPERIMENTAL_CONDITIONS = [
-    {"E_T": float(E_T), "A_e": float(A_e)}
-    for E_T, A_e in zip(
-        np.exp(np.random.normal(1, 0.5, 10)),
-        np.exp(np.random.normal(1, 0.5, 10)),
+    {
+        "E_T": float(E_T),
+        "A_e": float(A_e),
+        "Q_e": float(Q_e),
+        "P_e": float(P_e),
+    }
+    for E_T, A_e, Q_e, P_e in zip(
+        np.exp(np.random.normal(0, 0.5, _n_conditions)),  # E_T log-normal: mean=1, SD=0.5 on log-scale
+        np.exp(np.random.normal(1.5, 0.5, _n_conditions)),  # A_e log-normal: mean=e^1.5≈4.5, SD=0.5
+        np.exp(np.random.normal(0, 0.5, _n_conditions)),  # Q_e log-normal: mean=1, SD=0.5
+        np.exp(np.random.normal(0, 0.5, _n_conditions)),  # P_e log-normal: mean=1, SD=0.5
     )
 ]
 NUM_CONDITIONS = len(EXPERIMENTAL_CONDITIONS)
@@ -948,7 +959,6 @@ def compute_condition_likelihood_random(
 
 def compute_log_posterior_jax_random(
     log_param_array,
-    fixed_params_constant,
     fixed_params_varying,
     initial_array,
     ref_flux_array,
@@ -965,10 +975,8 @@ def compute_log_posterior_jax_random(
     ----------
     log_param_array : jnp.array
         Log-transformed MCMC parameters (14,)
-    fixed_params_constant : jnp.array
-        Constant fixed parameters [Q_e, P_e]
     fixed_params_varying : jnp.array
-        Varying fixed parameters per condition (n_conditions, 2): [A_e, E_T]
+        Varying fixed parameters per condition (n_conditions, 4): [A_e, E_T, Q_e, P_e]
     initial_array : jnp.array
         Initial conditions for enzyme_ode (7,): [A, Q, P, EA, EPQ, EP, EQ]
     ref_flux_array : jnp.array
@@ -998,18 +1006,17 @@ def compute_log_posterior_jax_random(
         - jnp.log(prior_std * jnp.sqrt(2 * jnp.pi))
     )
 
-    Q_e = fixed_params_constant[0]
-    P_e = fixed_params_constant[1]
-
     # vmap over conditions
     condition_lls = jax.vmap(
-        lambda A_e, E_T, rf, rc, rm: compute_condition_likelihood_random(
+        lambda A_e, E_T, Q_e, P_e, rf, rc, rm: compute_condition_likelihood_random(
             A_e, E_T, rf, rc, rm, param_array, Q_e, P_e,
             initial_array, observation_times, t_final
         )
     )(
-        fixed_params_varying[:, 0],
-        fixed_params_varying[:, 1],
+        fixed_params_varying[:, 0],  # A_e
+        fixed_params_varying[:, 1],  # E_T
+        fixed_params_varying[:, 2],  # Q_e
+        fixed_params_varying[:, 3],  # P_e
         ref_flux_array,
         ref_concs_arrays,
         ref_mids_arrays,
@@ -1071,17 +1078,17 @@ def run_mcmc_random(
     print("=" * 80)
     print(f"\nExperimental conditions:")
     for i, cond in enumerate(conditions):
-        print(f"  Condition {i+1}: E_T={cond['E_T']:.4f}, A_e={cond['A_e']:.4f}")
+        Q_e = cond.get("Q_e", ref_params["Q_e"])
+        P_e = cond.get("P_e", ref_params["P_e"])
+        print(f"  Condition {i+1}: E_T={cond['E_T']:.4f}, A_e={cond['A_e']:.4f}, Q_e={Q_e:.4f}, P_e={P_e:.4f}")
     sys.stdout.flush()
 
-    # Fixed parameters
-    fixed_params_constant = jnp.array([
-        ref_params["Q_e"],
-        ref_params["P_e"],
-    ])
-
+    # Fixed parameters varying per condition: [A_e, E_T, Q_e, P_e]
     fixed_params_varying = jnp.array([
-        [cond["A_e"], cond["E_T"]] for cond in conditions
+        [cond["A_e"], cond["E_T"],
+         cond.get("Q_e", ref_params["Q_e"]),
+         cond.get("P_e", ref_params["P_e"])]
+        for cond in conditions
     ])
 
     # Initial conditions array (same for all conditions)
@@ -1147,7 +1154,6 @@ def run_mcmc_random(
     def logdensity_fn(log_param_array):
         return compute_log_posterior_jax_random(
             log_param_array,
-            fixed_params_constant,
             fixed_params_varying,
             initial_array,
             ref_flux_array,

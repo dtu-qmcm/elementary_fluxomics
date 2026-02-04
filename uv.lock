@@ -3,6 +3,27 @@ revision = 3
 requires-python = "==3.10.*"
 
 [[package]]
+name = "arviz"
+version = "0.17.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "h5netcdf" },
+    { name = "matplotlib" },
+    { name = "numpy" },
+    { name = "packaging" },
+    { name = "pandas" },
+    { name = "scipy" },
+    { name = "setuptools" },
+    { name = "typing-extensions" },
+    { name = "xarray" },
+    { name = "xarray-einstats" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0b/d9/cb41f6e8580cbf154b22aecba13a91efaea1e56f3a1696091e64631326e2/arviz-0.17.1.tar.gz", hash = "sha256:b46dc693e34fd3dff20d824234c7a01cb04b1b536441e285218c54fab42c3c09", size = 1576610, upload-time = "2024-03-13T17:23:11.244Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d7/4d/cb2a58af7c747c30af357972151233f5d24d1699276e2d38621e57a22aa8/arviz-0.17.1-py3-none-any.whl", hash = "sha256:c6d24bea85a801d781d95cd21b583079ae882aa4a25ff385321a83eb47ee1e4a", size = 1659308, upload-time = "2024-03-13T17:22:58.026Z" },
+]
+
+[[package]]
 name = "blackjax"
 version = "0.9.6"
 source = { registry = "https://pypi.org/simple" }
@@ -88,6 +109,7 @@ name = "elementary-fluxomics-simulations"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "arviz" },
     { name = "blackjax" },
     { name = "cmcrameri" },
     { name = "diffrax" },
@@ -104,6 +126,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "arviz", specifier = ">=0.15.0" },
     { name = "blackjax", specifier = ">=0.9.6" },
     { name = "cmcrameri", specifier = ">=1.4" },
     { name = "diffrax", specifier = ">=0.4.0" },
@@ -196,6 +219,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/c3/6e/38ba96879a91df711270992524704777dc0814ed9551a3f53487b32ff5de/freeflux-0.3.7.tar.gz", hash = "sha256:d490365486aa6ba18f89da58ed3acd80841ab0216587558e843b15a3c4afe365", size = 60737, upload-time = "2025-10-19T04:50:00.817Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8e/03/422ca6ae51bc6818ef43f6ea693a47aae3ab3e3df302a477fd185b4a41bd/freeflux-0.3.7-py3-none-any.whl", hash = "sha256:59da867728ad15a4b38e2f783ddcad94c5cf8d38fc03a7762d1d82e833e1d49c", size = 68210, upload-time = "2025-10-19T04:49:59.467Z" },
+]
+
+[[package]]
+name = "h5netcdf"
+version = "1.8.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "packaging" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ef/03/92d6cc02c0055158167255980461155d6e17f1c4143c03f8bcc18d3e3f3a/h5netcdf-1.8.1.tar.gz", hash = "sha256:9b396a4cc346050fc1a4df8523bc1853681ec3544e0449027ae397cb953c7a16", size = 78679, upload-time = "2026-01-23T07:35:31.233Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b1/8b/88f16936a8e8070a83d36239555227ecd91728f9ef222c5382cda07e0fd6/h5netcdf-1.8.1-py3-none-any.whl", hash = "sha256:a76ed7cfc9b8a8908ea7057c4e57e27307acff1049b7f5ed52db6c2247636879", size = 62915, upload-time = "2026-01-23T07:35:30.195Z" },
 ]
 
 [[package]]
@@ -626,6 +662,34 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/1e/67/cbae4bf7683a64755c2c1778c418fea96d00e34395bb91743f08bd951571/wadler_lindig-0.1.7.tar.gz", hash = "sha256:81d14d3fe77d441acf3ebd7f4aefac20c74128bf460e84b512806dccf7b2cd55", size = 15842, upload-time = "2025-06-18T07:00:42.843Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8d/96/04e7b441807b26b794da5b11e59ed7f83b2cf8af202bd7eba8ad2fa6046e/wadler_lindig-0.1.7-py3-none-any.whl", hash = "sha256:e3ec83835570fd0a9509f969162aeb9c65618f998b1f42918cfc8d45122fe953", size = 20516, upload-time = "2025-06-18T07:00:41.684Z" },
+]
+
+[[package]]
+name = "xarray"
+version = "2023.12.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "packaging" },
+    { name = "pandas" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/eb/c3/b8646f305d96b290ab6129299216a95133322dfe8a5ea8433f73a49338b8/xarray-2023.12.0.tar.gz", hash = "sha256:4565dbc890de47e278346c44d6b33bb07d3427383e077a7ca8ab6606196fd433", size = 3602114, upload-time = "2023-12-08T19:39:09.603Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/54/a3/289d1b5703412247551fc9f2057e8726567bdd278d25c37ad834f78c851e/xarray-2023.12.0-py3-none-any.whl", hash = "sha256:3c22b6824681762b6c3fcad86dfd18960a617bccbc7f456ce21b43a20e455fb9", size = 1069958, upload-time = "2023-12-08T19:39:07.559Z" },
+]
+
+[[package]]
+name = "xarray-einstats"
+version = "0.7.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "scipy" },
+    { name = "xarray" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ff/b7/c6013581f169b220885ce6bd3a5329639d9406c30bd2f5fc3a20fd6deb81/xarray_einstats-0.7.0.tar.gz", hash = "sha256:2d7b571b3bbad3cf2fd10c6c75fd949d247d14c29574184c8489d9d607278d38", size = 29439, upload-time = "2024-01-17T11:48:24.975Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4a/61/1471d0738051be02bea0d84350026f01bfea4d9e9df76c560d7d915b3a9f/xarray_einstats-0.7.0-py3-none-any.whl", hash = "sha256:f39403341ebf5b634ab1f1bd0e1bb2dc51046e0df31aa908dfbe2fa6a493712e", size = 31705, upload-time = "2024-01-17T11:48:21.815Z" },
 ]
 
 [[package]]

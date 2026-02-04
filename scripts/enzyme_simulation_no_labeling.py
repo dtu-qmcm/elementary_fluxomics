@@ -26,6 +26,7 @@ jax.config.update("jax_enable_x64", True)
 
 import numpy as np
 import jax.numpy as jnp
+from jax.scipy.stats import norm
 import diffrax
 from diffrax import SteadyStateEvent
 import blackjax
@@ -73,12 +74,21 @@ DEFAULT_INITIAL = {
 
 # Experimental conditions for multi-condition fitting
 # Fixed seed ensures identical conditions across all scripts
+# 5 conditions with varying A_e, E_T, Q_e, P_e
 np.random.seed(12345)
+_n_conditions = 10
 EXPERIMENTAL_CONDITIONS = [
-    {"E_T": float(E_T), "A_e": float(A_e)}
-    for E_T, A_e in zip(
-        np.exp(np.random.normal(1, 0.5, 10)),  # E_T log-normal: mean=e, SD=0.5 on log-scale
-        np.exp(np.random.normal(1, 0.5, 10)),  # A_e log-normal: mean=e, SD=0.5 on log-scale
+    {
+        "E_T": float(E_T),
+        "A_e": float(A_e),
+        "Q_e": float(Q_e),
+        "P_e": float(P_e),
+    }
+    for E_T, A_e, Q_e, P_e in zip(
+        np.exp(np.random.normal(0, 0.5, _n_conditions)),  # E_T log-normal: mean=1, SD=0.5 on log-scale
+        np.exp(np.random.normal(1.5, 0.5, _n_conditions)),  # A_e log-normal: mean=e^1.5≈4.5, SD=0.5
+        np.exp(np.random.normal(0, 0.5, _n_conditions)),  # Q_e log-normal: mean=1, SD=0.5
+        np.exp(np.random.normal(0, 0.5, _n_conditions)),  # P_e log-normal: mean=1, SD=0.5
     )
 ]
 NUM_CONDITIONS = len(EXPERIMENTAL_CONDITIONS)
@@ -558,11 +568,11 @@ def generate_reference_data_multi_condition(base_params, initial, conditions):
     Parameters
     ----------
     base_params : dict
-        Base parameter dictionary (A_e, E_T will be overridden per condition)
+        Base parameter dictionary (A_e, E_T, Q_e, P_e will be overridden per condition)
     initial : dict
         Initial conditions (same across all conditions)
     conditions : list of dict
-        Experimental conditions with keys 'A_e', 'E_T'
+        Experimental conditions with keys 'A_e', 'E_T', 'Q_e', 'P_e'
 
     Returns
     -------
@@ -574,6 +584,8 @@ def generate_reference_data_multi_condition(base_params, initial, conditions):
         params = base_params.copy()
         params["A_e"] = cond["A_e"]
         params["E_T"] = cond["E_T"]
+        params["Q_e"] = cond.get("Q_e", base_params["Q_e"])
+        params["P_e"] = cond.get("P_e", base_params["P_e"])
         ref_data = generate_reference_data_single_condition(params, initial)
         ref_data_list.append(ref_data)
     return ref_data_list
@@ -666,18 +678,15 @@ def compute_condition_likelihood(
 
     # Log-likelihood for flux (normal distribution, std=0.1)
     flux_std = 0.1
-    flux_residual = (ref_flux - sim_flux) / flux_std
-    ll_flux = -0.5 * flux_residual**2 - jnp.log(flux_std * jnp.sqrt(2 * jnp.pi))
+    ll_flux = norm.logpdf(ref_flux, loc=sim_flux, scale=flux_std)
 
     # Log-likelihood for concentrations (lognormal distribution, std=0.1)
     conc_std = 0.1
-    log_ref_concs = jnp.log(jnp.maximum(ref_concs, 1e-10))
-    log_sim_concs = jnp.log(jnp.maximum(sim_concs, 1e-10))
-    conc_residuals = (log_ref_concs - log_sim_concs) / conc_std
-    ll_concs = jnp.sum(
-        -0.5 * conc_residuals**2
-        - jnp.log(conc_std * jnp.sqrt(2 * jnp.pi))
-    )
+    ll_concs = jnp.sum(norm.logpdf(
+        jnp.log(jnp.maximum(ref_concs, 1e-10)),
+        loc=jnp.log(jnp.maximum(sim_concs, 1e-10)),
+        scale=conc_std
+    ))
 
     ll_condition = ll_flux + ll_concs
 
@@ -687,7 +696,6 @@ def compute_condition_likelihood(
 
 def compute_log_posterior_jax(
     log_param_array,
-    fixed_params_constant,
     fixed_params_varying,
     initial_array,
     ref_flux_array,
@@ -705,10 +713,8 @@ def compute_log_posterior_jax(
     ----------
     log_param_array : jnp.array
         Array of log-transformed MCMC parameters (log rate constants)
-    fixed_params_constant : jnp.array
-        Constant fixed parameters [Q_e, P_e]
     fixed_params_varying : jnp.array
-        Varying fixed parameters per condition (num_conditions, 2) [[A_e, E_T], ...]
+        Varying fixed parameters per condition (num_conditions, 4) [[A_e, E_T, Q_e, P_e], ...]
     initial_array : jnp.array
         Initial conditions [A, Q, P, EA, EPQ, EP]
     ref_flux_array : jnp.array
@@ -734,18 +740,16 @@ def compute_log_posterior_jax(
         - jnp.log(prior_std * jnp.sqrt(2 * jnp.pi))
     )
 
-    # Extract constant parameters (external Q and P concentrations)
-    Q_e = fixed_params_constant[0]
-    P_e = fixed_params_constant[1]
-
     # Use vmap to compute likelihood for all conditions in parallel
     condition_lls = jax.vmap(
-        lambda A_e, E_T, rf, rc: compute_condition_likelihood(
+        lambda A_e, E_T, Q_e, P_e, rf, rc: compute_condition_likelihood(
             A_e, E_T, rf, rc, param_array, Q_e, P_e, initial_array
         )
     )(
-        fixed_params_varying[:, 0],  # A_es
-        fixed_params_varying[:, 1],  # E_Ts
+        fixed_params_varying[:, 0],  # A_e
+        fixed_params_varying[:, 1],  # E_T
+        fixed_params_varying[:, 2],  # Q_e
+        fixed_params_varying[:, 3],  # P_e
         ref_flux_array,
         ref_concs_arrays,
     )
@@ -800,20 +804,13 @@ def run_mcmc(
     print("=" * 80)
     print(f"\nExperimental conditions:")
     for i, cond in enumerate(conditions):
-        print(f"  Condition {i+1}: E_T={cond['E_T']:.4f}, A_e={cond['A_e']:.4f}")
+        print(f"  Condition {i+1}: E_T={cond['E_T']:.4f}, A_e={cond['A_e']:.4f}, Q_e={cond['Q_e']:.4f}, P_e={cond['P_e']:.4f}")
     sys.stdout.flush()
 
-    # Split fixed parameters into constant and varying
-    # Constant: Q_e, P_e (same across all conditions)
-    # Varying: A_e, E_T (different per condition)
-    fixed_params_constant = jnp.array([
-        ref_params["Q_e"],
-        ref_params["P_e"],
-    ])
-
+    # All varying fixed parameters per condition: A_e, E_T, Q_e, P_e
     fixed_params_varying = jnp.array([
-        [cond["A_e"], cond["E_T"]] for cond in conditions
-    ])  # Shape: (num_conditions, 2)
+        [cond["A_e"], cond["E_T"], cond["Q_e"], cond["P_e"]] for cond in conditions
+    ])  # Shape: (num_conditions, 4)
 
     initial_array = jnp.array([
         initial["A"],
@@ -860,7 +857,6 @@ def run_mcmc(
     def logdensity_fn(log_param_array):
         return compute_log_posterior_jax(
             log_param_array,
-            fixed_params_constant,
             fixed_params_varying,
             initial_array,
             ref_flux_array,
