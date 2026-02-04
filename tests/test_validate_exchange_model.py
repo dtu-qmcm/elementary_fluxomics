@@ -13,7 +13,6 @@ Tests:
 6. Concentration equilibration (internal -> external when k_ex large)
 """
 
-from pathlib import Path
 import sys
 
 import numpy as np
@@ -21,11 +20,7 @@ import jax
 import jax.numpy as jnp
 import diffrax
 
-# Import from local scripts
-SCRIPT_DIR = Path(__file__).parent
-sys.path.insert(0, str(SCRIPT_DIR))
-
-from enzyme_simulation_no_labeling import (
+from scripts.enzyme_simulation_no_labeling import (
     DEFAULT_PARAMS as NL_PARAMS,
     DEFAULT_INITIAL as NL_INITIAL,
     compute_rates as nl_compute_rates,
@@ -33,7 +28,7 @@ from enzyme_simulation_no_labeling import (
     compute_wegscheider_constraints,
 )
 
-from isotopomer_simulation import (
+from scripts.isotopomer_simulation import (
     DEFAULT_PARAMS as ISO_PARAMS,
     DEFAULT_INITIAL_TOTAL,
     isotopomer_ode,

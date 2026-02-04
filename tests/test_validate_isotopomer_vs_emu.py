@@ -25,12 +25,8 @@ jax.config.update("jax_enable_x64", True)
 import numpy as np
 import jax.numpy as jnp
 
-try:
-    from scripts.isotopomer_simulation import isotopomer_ode, enzyme_ode
-    from scripts.emu_jax import run_freeflux_inst_simulation
-except ModuleNotFoundError:
-    from isotopomer_simulation import isotopomer_ode, enzyme_ode
-    from emu_jax import run_freeflux_inst_simulation
+from scripts.isotopomer_simulation import isotopomer_ode, enzyme_ode
+from scripts.emu_jax import run_freeflux_inst_simulation
 
 import diffrax
 from diffrax import SteadyStateEvent

@@ -26,7 +26,6 @@ uv run python scripts/gibbs_comparison_fba2_fixed.py # FBA2 fixed, FBA1 varies
 uv run python scripts/enzyme_simulation.py             # Steady-state with isotope labeling
 uv run python scripts/enzyme_simulation_instationary.py # Instationary isotope labeling
 uv run python scripts/enzyme_simulation_no_labeling.py  # No isotope labeling
-uv run python scripts/validate_isotopomer_vs_emu.py     # Validate isotopomer ODE vs EMU
 ```
 
 ### Run main script
@@ -157,9 +156,13 @@ Scripts for simulating enzyme-catalyzed reactions with isotope labeling using bo
 | `scripts/enzyme_simulation.py` | Main simulation with steady-state isotope labeling + MCMC |
 | `scripts/enzyme_simulation_instationary.py` | Instationary (time-course) isotope labeling |
 | `scripts/enzyme_simulation_no_labeling.py` | Enzyme kinetics without isotope labeling |
+| `scripts/enzyme_simulation_random_instationary.py` | Random mechanism with instationary labeling |
 | `scripts/isotopomer_simulation.py` | Isotopomer ODE definitions (18-state system) |
+| `scripts/isotopomer_simulation_random.py` | Isotopomer ODE for random mechanism (20-state system) |
 | `scripts/emu_jax.py` | JAX-compatible EMU simulation using freeflux |
-| `scripts/validate_isotopomer_vs_emu.py` | Validation script comparing both approaches |
+| `scripts/psis_loo_comparison.py` | PSIS-LOO model comparison (ordered vs random) |
+| `tests/test_validate_isotopomer_vs_emu.py` | Validation: isotopomer ODE vs freeflux EMU |
+| `tests/test_validate_exchange_model.py` | Validation: external pool exchange kinetics |
 
 ### Enzyme Kinetics Model
 
@@ -266,9 +269,10 @@ results = run_mcmc(
 
 ### Validation
 
-Run the validation script to verify isotopomer ODE matches freeflux EMU:
+Run the validation scripts to verify implementations:
 ```bash
-uv run python scripts/validate_isotopomer_vs_emu.py
+uv run python tests/test_validate_isotopomer_vs_emu.py  # Isotopomer ODE vs freeflux EMU
+uv run python tests/test_validate_exchange_model.py      # Exchange kinetics validation
 ```
 
 Expected output: Maximum absolute difference < 1% (typically ~0.4%)
