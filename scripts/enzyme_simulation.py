@@ -576,7 +576,9 @@ def compute_condition_likelihood(
     ])
 
     # Log-likelihood for MIDs (lognormal distribution, std=0.01)
-    # Multiplied by 5 to match information content of instationary data (5 timepoints)
+    # Design choice: multiply by 5 so that a single steady-state MID measurement
+    # contributes the same total weight as the 5 instationary timepoints,
+    # preventing the timeseries data from dominating the posterior.
     mid_std = 0.01
     mid_multiplier = 5
     ll_mids = mid_multiplier * jnp.sum(norm.logpdf(
@@ -843,7 +845,9 @@ def compute_condition_likelihood_emu(
     ])
 
     # Log-likelihood for MIDs (lognormal distribution, std=0.01)
-    # Multiplied by 5 to match information content of instationary data (5 timepoints)
+    # Design choice: multiply by 5 so that a single steady-state MID measurement
+    # contributes the same total weight as the 5 instationary timepoints,
+    # preventing the timeseries data from dominating the posterior.
     mid_std = 0.01
     mid_multiplier = 5
     ll_mids = mid_multiplier * jnp.sum(norm.logpdf(
