@@ -28,9 +28,51 @@ import numpy as np
 import jax.numpy as jnp
 from jax.scipy.stats import norm
 import diffrax
-from diffrax import SteadyStateEvent
 import blackjax
 from jax_tqdm import scan_tqdm
+
+try:
+    from scripts.enzyme_utils import (
+        DEFAULT_PARAMS,
+        DEFAULT_INITIAL,
+        EXPERIMENTAL_CONDITIONS,
+        NUM_CONDITIONS,
+        R_GAS,
+        TEMPERATURE,
+        FORMATION_ENERGIES,
+        MCMC_PARAM_NAMES,
+        compute_wegscheider_constraints,
+        compute_wegscheider_constraints_jax,
+        compute_E,
+        compute_rates,
+        ode_system,
+        simulate_ode_to_steady_state,
+        get_steady_state,
+        compute_forward_backward_fluxes,
+        params_array_to_dict,
+        params_dict_to_array,
+    )
+except ModuleNotFoundError:
+    from enzyme_utils import (
+        DEFAULT_PARAMS,
+        DEFAULT_INITIAL,
+        EXPERIMENTAL_CONDITIONS,
+        NUM_CONDITIONS,
+        R_GAS,
+        TEMPERATURE,
+        FORMATION_ENERGIES,
+        MCMC_PARAM_NAMES,
+        compute_wegscheider_constraints,
+        compute_wegscheider_constraints_jax,
+        compute_E,
+        compute_rates,
+        ode_system,
+        simulate_ode_to_steady_state,
+        get_steady_state,
+        compute_forward_backward_fluxes,
+        params_array_to_dict,
+        params_dict_to_array,
+    )
 
 
 SCRIPT_DIR = Path(__file__).parent
@@ -38,74 +80,8 @@ PROJECT_ROOT = SCRIPT_DIR.parent
 RESULTS_DIR = PROJECT_ROOT / "results" / "enzyme_simulation_no_labeling"
 
 
-# Default parameters
-DEFAULT_PARAMS = {
-    # External pool concentrations (fixed boundary conditions)
-    "A_e": 5.0,          # external A concentration
-    "Q_e": 1.0,          # external Q concentration
-    "P_e": 1.0,          # external P concentration
-    # Exchange rate constants (symmetric mass-action: v = k * (X_e - X))
-    "k_A_ex": 0.1,       # A exchange rate constant
-    "k_Q_ex": 0.1,       # Q exchange rate constant
-    "k_P_ex": 0.1,       # P exchange rate constant
-    # Enzyme kinetic rate constants
-    "k2f": 10.0,         # A + E -> EA forward (computed from constraints)
-    "k2r": 250.0,        # EA -> A + E reverse (25x)
-    "k3f": 125.0,        # EA -> EPQ forward (25x)
-    "k3r": 12.5,         # EPQ -> EA reverse (25x)
-    "k4f": 200.0,        # EPQ -> EP + Q forward (25x)
-    "k4r": 20.0,         # EP + Q -> EPQ reverse (25x)
-    "k5f": 150.0,        # EP -> E + P forward (25x)
-    "k5r": 15.0,         # E + P -> EP reverse (25x)
-    "k_pq_f": 50.0,      # P -> Q forward rate constant (25x)
-    "k_pq_r": 2.0,       # Q -> P reverse rate constant (computed from constraints)
-    "E_T": 1.0,          # total enzyme concentration
-}
 
-# Initial conditions (state order: A, Q, P, EA, EPQ, EP)
-DEFAULT_INITIAL = {
-    "A": 0.1,
-    "Q": 0.1,
-    "P": 0.1,
-    "EA": 0.0,
-    "EPQ": 0.0,
-    "EP": 0.0,
-}
-
-# Experimental conditions for multi-condition fitting
-# Fixed seed ensures identical conditions across all scripts
-# 5 conditions with varying A_e, E_T, Q_e, P_e
-np.random.seed(12345)
-_n_conditions = 10
-EXPERIMENTAL_CONDITIONS = [
-    {
-        "E_T": float(E_T),
-        "A_e": float(A_e),
-        "Q_e": float(Q_e),
-        "P_e": float(P_e),
-    }
-    for E_T, A_e, Q_e, P_e in zip(
-        np.exp(np.random.normal(0, 0.5, _n_conditions)),  # E_T log-normal: mean=1, SD=0.5 on log-scale
-        np.exp(np.random.normal(1.5, 0.5, _n_conditions)),  # A_e log-normal: mean=e^1.5≈4.5, SD=0.5
-        np.exp(np.random.normal(0, 0.5, _n_conditions)),  # Q_e log-normal: mean=1, SD=0.5
-        np.exp(np.random.normal(0, 0.5, _n_conditions)),  # P_e log-normal: mean=1, SD=0.5
-    )
-]
-NUM_CONDITIONS = len(EXPERIMENTAL_CONDITIONS)
-
-# Thermodynamic constants
-R_GAS = 8.314e-3  # Gas constant in kJ/(mol·K)
-TEMPERATURE = 298.15  # Temperature in K
-
-# Formation energies (chemical potentials) in kJ/mol
-# These constrain the Gibbs energies of reactions via:
-#   ΔG°(A → P + Q) = μ_P + μ_Q - μ_A = -2 kJ/mol
-#   ΔG°(P → Q) = μ_Q - μ_P = -3 kJ/mol
-FORMATION_ENERGIES = {
-    "A": 0.0,    # Reference state
-    "P": 0.5,    # kJ/mol
-    "Q": -2.5,   # kJ/mol
-}
+# Constants, default params, and shared functions imported from enzyme_utils
 
 
 def create_output_directory():
@@ -113,322 +89,6 @@ def create_output_directory():
     print(f"Output directory: {RESULTS_DIR}")
     sys.stdout.flush()
     return RESULTS_DIR
-
-
-def compute_wegscheider_constraints(params, formation_energies=None, temperature=None):
-    """Compute dependent rate constants from Wegscheider conditions.
-
-    The Wegscheider condition ensures thermodynamic consistency by requiring
-    that equilibrium constants around reaction cycles satisfy:
-        K_cycle = exp(-ΔG°_cycle / RT)
-
-    For the enzyme mechanism (A → P + Q through enzyme intermediates):
-        K_enzyme = (k2f · k3f · k4f · k5f) / (k2r · k3r · k4r · k5r) = exp(-ΔG°/RT)
-        where ΔG° = μ_P + μ_Q - μ_A
-
-    For the P ⇌ Q interconversion:
-        K_pq = k_pq_f / k_pq_r = exp(-ΔG°_pq/RT)
-        where ΔG°_pq = μ_Q - μ_P
-
-    Parameters
-    ----------
-    params : dict
-        Parameter dictionary with rate constants (k2f and k_pq_r will be overwritten)
-    formation_energies : dict, optional
-        Formation energies for A, P, Q in kJ/mol. Defaults to FORMATION_ENERGIES.
-    temperature : float, optional
-        Temperature in K. Defaults to TEMPERATURE.
-
-    Returns
-    -------
-    dict
-        Updated parameter dictionary with k2f and k_pq_r computed from constraints
-    """
-    if formation_energies is None:
-        formation_energies = FORMATION_ENERGIES
-    if temperature is None:
-        temperature = TEMPERATURE
-
-    RT = R_GAS * temperature
-
-    # Gibbs energy for overall enzyme reaction: A → P + Q
-    delta_G_enzyme = (
-        formation_energies["P"] + formation_energies["Q"] - formation_energies["A"]
-    )
-    K_enzyme = np.exp(-delta_G_enzyme / RT)
-
-    # Gibbs energy for P → Q interconversion
-    delta_G_pq = formation_energies["Q"] - formation_energies["P"]
-    K_pq = np.exp(-delta_G_pq / RT)
-
-    # Solve for k2f from Haldane relation (enzyme cycle constraint)
-    # K_enzyme = (k2f · k3f · k4f · k5f) / (k2r · k3r · k4r · k5r)
-    # k2f = K_enzyme · (k2r · k3r · k4r · k5r) / (k3f · k4f · k5f)
-    k2f = K_enzyme * (
-        params["k2r"] * params["k3r"] * params["k4r"] * params["k5r"]
-    ) / (params["k3f"] * params["k4f"] * params["k5f"])
-
-    # Solve for k_pq_r from P↔Q equilibrium constraint
-    # K_pq = k_pq_f / k_pq_r
-    # k_pq_r = k_pq_f / K_pq
-    k_pq_r = params["k_pq_f"] / K_pq
-
-    # Create updated params dict
-    updated_params = params.copy()
-    updated_params["k2f"] = k2f
-    updated_params["k_pq_r"] = k_pq_r
-
-    return updated_params
-
-
-def compute_wegscheider_constraints_jax(params, formation_energies_array, temperature):
-    """JAX-compatible version of Wegscheider constraint computation.
-
-    Parameters
-    ----------
-    params : dict
-        Parameter dictionary (JAX-traced values)
-    formation_energies_array : jnp.array
-        Formation energies [μ_A, μ_P, μ_Q] in kJ/mol
-    temperature : float
-        Temperature in K
-
-    Returns
-    -------
-    tuple
-        (k2f, k_pq_r) computed from thermodynamic constraints
-    """
-    RT = R_GAS * temperature
-    mu_A, mu_P, mu_Q = formation_energies_array[0], formation_energies_array[1], formation_energies_array[2]
-
-    # Gibbs energy for overall enzyme reaction: A → P + Q
-    delta_G_enzyme = mu_P + mu_Q - mu_A
-    K_enzyme = jnp.exp(-delta_G_enzyme / RT)
-
-    # Gibbs energy for P → Q interconversion
-    delta_G_pq = mu_Q - mu_P
-    K_pq = jnp.exp(-delta_G_pq / RT)
-
-    # Solve for k2f from Haldane relation
-    k2f = K_enzyme * (
-        params["k2r"] * params["k3r"] * params["k4r"] * params["k5r"]
-    ) / (params["k3f"] * params["k4f"] * params["k5f"])
-
-    # Solve for k_pq_r from P↔Q equilibrium
-    k_pq_r = params["k_pq_f"] / K_pq
-
-    return k2f, k_pq_r
-
-
-def compute_E(EA, EPQ, EP, E_T):
-    """Compute free enzyme from conservation constraint."""
-    return E_T - EA - EPQ - EP
-
-
-def compute_rates(y, params):
-    """Compute all reaction rates from state and parameters.
-
-    Exchange reactions use symmetric mass-action kinetics:
-    v_X_ex = k_X_ex * (X_e - X)
-    Positive v_X_ex means net influx, negative means net efflux.
-    """
-    A, Q, P, EA, EPQ, EP = y
-    E = compute_E(EA, EPQ, EP, params["E_T"])
-
-    # Exchange reactions with external pools (symmetric mass-action)
-    v_A_ex = params["k_A_ex"] * (params["A_e"] - A)
-    v_Q_ex = params["k_Q_ex"] * (params["Q_e"] - Q)
-    v_P_ex = params["k_P_ex"] * (params["P_e"] - P)
-
-    # Enzyme-catalyzed reactions
-    v2 = A * E * params["k2f"] - EA * params["k2r"]
-    v3 = EA * params["k3f"] - EPQ * params["k3r"]
-    v4 = EPQ * params["k4f"] - Q * EP * params["k4r"]
-    v5 = EP * params["k5f"] - E * P * params["k5r"]
-
-    # P <-> Q interconversion
-    v_pq = P * params["k_pq_f"] - Q * params["k_pq_r"]
-
-    return {
-        "v_A_ex": v_A_ex, "v2": v2, "v3": v3, "v4": v4, "v5": v5,
-        "v_Q_ex": v_Q_ex, "v_P_ex": v_P_ex, "v_pq": v_pq
-    }
-
-
-def ode_system(t, y, args):
-    """ODE right-hand side for diffrax.
-
-    State variables: [A, Q, P, EA, EPQ, EP]
-
-    Mass balances:
-    - A: exchange with external pool, consumed by enzyme binding
-    - Q: produced by v4, exchange with external pool, interconversion with P
-    - P: produced by v5, exchange with external pool, interconversion with Q
-    - EA, EPQ, EP: enzyme intermediates
-    """
-    params = args
-    rates = compute_rates(y, params)
-
-    # A: exchange with external pool, consumed by enzyme binding
-    dA_dt = rates["v_A_ex"] - rates["v2"]
-
-    # Q: produced by v4, exchange with external pool, interconversion with P
-    dQ_dt = rates["v4"] + rates["v_Q_ex"] + rates["v_pq"]
-
-    # P: produced by v5, exchange with external pool, interconversion with Q
-    dP_dt = rates["v5"] + rates["v_P_ex"] - rates["v_pq"]
-
-    # Enzyme intermediates (unchanged)
-    dEA_dt = rates["v2"] - rates["v3"]
-    dEPQ_dt = rates["v3"] - rates["v4"]
-    dEP_dt = rates["v4"] - rates["v5"]
-
-    return jnp.array([dA_dt, dQ_dt, dP_dt, dEA_dt, dEPQ_dt, dEP_dt])
-
-
-def simulate_ode_to_steady_state(params, initial):
-    """Simulate the ODE system to steady state using diffrax event detection.
-
-    Wegscheider thermodynamic constraints are always applied to compute
-    k2f and k_pq_r from the formation energies before simulation.
-
-    Parameters
-    ----------
-    params : dict
-        Parameter dictionary
-    initial : dict
-        Initial conditions
-
-    Returns
-    -------
-    diffrax.Solution
-        ODE solution at steady state
-    """
-    # Apply thermodynamic constraints to compute dependent rate constants
-    params = compute_wegscheider_constraints(params)
-
-    y0 = jnp.array([initial[k] for k in ["A", "Q", "P", "EA", "EPQ", "EP"]])
-
-    term = diffrax.ODETerm(ode_system)
-    solver = diffrax.Kvaerno5()
-    stepsize_controller = diffrax.PIDController(rtol=1e-6, atol=1e-8)
-
-    # Steady-state event: terminates when norm(f) < atol + rtol * norm(y)
-    discrete_terminating_event = SteadyStateEvent(rtol=1e-4, atol=1e-6)
-
-    # Save only the final state
-    saveat = diffrax.SaveAt(t1=True)
-
-    sol = diffrax.diffeqsolve(
-        term,
-        solver,
-        t0=0.0,
-        t1=jnp.inf,  # Run until event triggers
-        dt0=1e-10,
-        y0=y0,
-        args=params,
-        saveat=saveat,
-        stepsize_controller=stepsize_controller,
-        max_steps=int(1e5),
-        discrete_terminating_event=discrete_terminating_event,
-        throw=False,
-    )
-
-    return sol
-
-
-def simulate_ode_to_steady_state_jax(params, initial_array):
-    """JAX-compatible ODE simulation to steady state.
-
-    Parameters
-    ----------
-    params : dict
-        Parameter dictionary with rate constants
-    initial_array : jnp.array
-        Initial concentrations [A, Q, P, EA, EPQ, EP]
-
-    Returns
-    -------
-    diffrax.Solution
-        ODE solution at steady state
-    """
-    term = diffrax.ODETerm(ode_system)
-    solver = diffrax.Kvaerno5()
-    stepsize_controller = diffrax.PIDController(rtol=1e-6, atol=1e-8)
-
-    # Steady-state event: terminates when norm(f) < atol + rtol * norm(y)
-    discrete_terminating_event = SteadyStateEvent(rtol=1e-4, atol=1e-6)
-
-    # Save only the final state
-    saveat = diffrax.SaveAt(t1=True)
-
-    sol = diffrax.diffeqsolve(
-        term,
-        solver,
-        t0=0.0,
-        t1=jnp.inf,  # Run until event triggers
-        dt0=1e-10,
-        y0=initial_array,
-        args=params,
-        saveat=saveat,
-        stepsize_controller=stepsize_controller,
-        max_steps=int(1e5),
-        discrete_terminating_event=discrete_terminating_event,
-        throw=False,
-    )
-
-    return sol
-
-
-def get_steady_state(sol, params):
-    """Extract steady-state concentrations and fluxes."""
-    # With SaveAt(t1=True), sol.ys is (1, 6) - extract the single row
-    y_ss = sol.ys[0] if sol.ys.ndim > 1 else sol.ys
-    concentrations = {
-        "A": float(y_ss[0]),
-        "Q": float(y_ss[1]),
-        "P": float(y_ss[2]),
-        "EA": float(y_ss[3]),
-        "EPQ": float(y_ss[4]),
-        "EP": float(y_ss[5]),
-        "E": float(compute_E(y_ss[3], y_ss[4], y_ss[5], params["E_T"])),
-    }
-
-    rates = compute_rates(y_ss, params)
-
-    return concentrations, rates
-
-
-def compute_forward_backward_fluxes(concs, params):
-    """Compute forward and backward fluxes for each reversible reaction."""
-    A = concs["A"]
-    Q = concs["Q"]
-    P = concs["P"]
-    EA = concs["EA"]
-    EPQ = concs["EPQ"]
-    EP = concs["EP"]
-    E = concs["E"]
-
-    fluxes = {
-        # Exchange reactions (net flux)
-        "v_A_ex": params["k_A_ex"] * (params["A_e"] - A),
-        "v_Q_ex": params["k_Q_ex"] * (params["Q_e"] - Q),
-        "v_P_ex": params["k_P_ex"] * (params["P_e"] - P),
-        # Enzyme reactions (forward and backward)
-        "v2_f": A * E * params["k2f"],
-        "v2_b": EA * params["k2r"],
-        "v3_f": EA * params["k3f"],
-        "v3_b": EPQ * params["k3r"],
-        "v4_f": EPQ * params["k4f"],
-        "v4_b": Q * EP * params["k4r"],
-        "v5_f": EP * params["k5f"],
-        "v5_b": E * P * params["k5r"],
-        # P <-> Q interconversion
-        "vpq_f": P * params["k_pq_f"],
-        "vpq_b": Q * params["k_pq_r"],
-    }
-
-    return fluxes
 
 
 def compute_log_likelihood(
@@ -498,28 +158,6 @@ def compute_log_likelihood(
     )
 
     return log_likelihood
-
-
-# Parameter names that will be sampled (independent rate constants only)
-# k2f and k_pq_r are computed from Wegscheider thermodynamic constraints
-# A_e, Q_e, P_e, E_T are fixed (experimental conditions)
-MCMC_PARAM_NAMES = [
-    "k2r", "k3f", "k3r", "k4f", "k4r", "k5f", "k5r",
-    "k_A_ex", "k_Q_ex", "k_P_ex", "k_pq_f"
-]
-
-
-def params_array_to_dict(param_array, fixed_params):
-    """Convert parameter array to full parameter dictionary."""
-    params = fixed_params.copy()
-    for i, name in enumerate(MCMC_PARAM_NAMES):
-        params[name] = param_array[i]
-    return params
-
-
-def params_dict_to_array(params):
-    """Extract MCMC parameters from dictionary to array."""
-    return jnp.array([params[name] for name in MCMC_PARAM_NAMES])
 
 
 def generate_reference_data_single_condition(params, initial):

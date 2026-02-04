@@ -366,39 +366,6 @@ def simulate_enzyme_to_steady_state_random_jax(params, initial_array):
     return sol
 
 
-def compute_rates_random(y, params):
-    """Compute all reaction rates from state and parameters for random mechanism."""
-    A, Q, P, EA, EPQ, EP, EQ = y
-    E = compute_E_random(EA, EPQ, EP, EQ, params["E_T"])
-
-    # Exchange reactions with external pools
-    v_A_ex = params["k_A_ex"] * (params["A_e"] - A)
-    v_Q_ex = params["k_Q_ex"] * (params["Q_e"] - Q)
-    v_P_ex = params["k_P_ex"] * (params["P_e"] - P)
-
-    # Enzyme-catalyzed reactions
-    v2 = A * E * params["k2f"] - EA * params["k2r"]
-    v3 = EA * params["k3f"] - EPQ * params["k3r"]
-
-    # Path 1: Q releases first
-    v4a = EPQ * params["k4af"] - Q * EP * params["k4ar"]
-    v5a = EP * params["k5af"] - E * P * params["k5ar"]
-
-    # Path 2: P releases first
-    v4b = EPQ * params["k4bf"] - P * EQ * params["k4br"]
-    v5b = EQ * params["k5bf"] - E * Q * params["k5br"]
-
-    # P <-> Q interconversion
-    v_pq = P * params["k_pq_f"] - Q * params["k_pq_r"]
-
-    return {
-        "v_A_ex": v_A_ex, "v2": v2, "v3": v3,
-        "v4a": v4a, "v5a": v5a,
-        "v4b": v4b, "v5b": v5b,
-        "v_Q_ex": v_Q_ex, "v_P_ex": v_P_ex, "v_pq": v_pq
-    }
-
-
 # =============================================================================
 # Pure JAX EMU Simulation (Fast, JAX-Traceable)
 # =============================================================================
@@ -571,106 +538,6 @@ def simulate_emu_timecourse_random(params, concs_dict, observation_times, networ
 # Isotopomer Simulation using ODE (kept for reference data generation)
 # =============================================================================
 
-try:
-    from scripts.isotopomer_simulation_random import (
-        isotopomer_ode_random,
-        build_initial_state_random,
-        compute_mids_random,
-    )
-except ModuleNotFoundError:
-    from isotopomer_simulation_random import (
-        isotopomer_ode_random,
-        build_initial_state_random,
-        compute_mids_random,
-    )
-
-
-def simulate_isotopomers_to_timepoints_jax(params, concs_dict, timepoints):
-    """Simulate isotopomer dynamics to specified timepoints using JAX ODE solver.
-
-    Parameters
-    ----------
-    params : dict
-        Parameter dictionary with rate constants
-    concs_dict : dict
-        Steady-state concentrations with keys A, Q, P, EA, EPQ, EP, EQ
-    timepoints : jnp.array
-        Time points at which to observe MIDs
-
-    Returns
-    -------
-    dict
-        {timepoint: mids_array} where mids_array is (7,) for measurable metabolites
-    """
-    # Build initial isotopomer state (all unlabeled at t=0)
-    initial_total = {
-        "A": concs_dict["A"],
-        "Q": concs_dict["Q"],
-        "P": concs_dict["P"],
-        "EA": concs_dict["EA"],
-        "EPQ": concs_dict["EPQ"],
-        "EP": concs_dict["EP"],
-        "EQ": concs_dict["EQ"],
-    }
-    y0 = build_initial_state_random(initial_total)
-
-    # Include t=0 in timepoints for simulation
-    all_timepoints = jnp.concatenate([jnp.array([0.0]), timepoints])
-
-    term = diffrax.ODETerm(isotopomer_ode_random)
-    solver = diffrax.Kvaerno3()
-    stepsize_controller = diffrax.PIDController(rtol=1e-6, atol=1e-8)
-    saveat = diffrax.SaveAt(ts=all_timepoints)
-
-    sol = diffrax.diffeqsolve(
-        term,
-        solver,
-        t0=0.0,
-        t1=float(timepoints[-1]),
-        dt0=1e-6,
-        y0=y0,
-        args=params,
-        saveat=saveat,
-        stepsize_controller=stepsize_controller,
-        max_steps=int(1e7),
-        throw=False,
-    )
-
-    # Extract MIDs at each observation timepoint (skip t=0)
-    timecourse_mids = {}
-    for i, t in enumerate(timepoints):
-        t_float = float(t)
-        y_t = sol.ys[i + 1]  # +1 to skip t=0
-        mids = compute_mids_random(y_t)
-        # Extract measurable MIDs: A (3), Q (2), P (2) = 7 total
-        measurable_mids = jnp.concatenate([
-            mids["A_12"],   # 3 components
-            mids["Q_1"],    # 2 components
-            mids["P_1"],    # 2 components
-        ])
-        timecourse_mids[t_float] = measurable_mids
-
-    return timecourse_mids
-
-
-def extract_measurable_mids(mids_dict):
-    """Extract measurable MIDs (A, Q, P) from full MID dictionary.
-
-    Parameters
-    ----------
-    mids_dict : dict
-        {emu_id: mdv_array} from compute_mids_random
-
-    Returns
-    -------
-    jnp.ndarray
-        MID array (7,): [A_M0, A_M1, A_M2, Q_M0, Q_M1, P_M0, P_M1]
-    """
-    return jnp.concatenate([
-        mids_dict["A_12"],
-        mids_dict["Q_1"],
-        mids_dict["P_1"],
-    ])
 
 
 # =============================================================================
@@ -758,18 +625,6 @@ def generate_reference_data_single_condition_random(params, initial, observation
     }
 
 
-def generate_reference_data_multi_condition_random(base_params, initial, conditions, observation_times):
-    """Generate reference data for multiple experimental conditions."""
-    ref_data_list = []
-    for cond in conditions:
-        params = base_params.copy()
-        params["A_e"] = cond["A_e"]
-        params["E_T"] = cond["E_T"]
-        ref_data = generate_reference_data_single_condition_random(params, initial, observation_times)
-        ref_data_list.append(ref_data)
-    return ref_data_list
-
-
 # =============================================================================
 # MCMC Setup
 # =============================================================================
@@ -782,14 +637,6 @@ MCMC_PARAM_NAMES_RANDOM = [
     "k4bf", "k4br", "k5bf",          # path 2: P first
     "k_A_ex", "k_Q_ex", "k_P_ex", "k_pq_f"  # exchange
 ]
-
-
-def params_array_to_dict_random(param_array, fixed_params):
-    """Convert parameter array to full parameter dictionary."""
-    params = fixed_params.copy()
-    for i, name in enumerate(MCMC_PARAM_NAMES_RANDOM):
-        params[name] = param_array[i]
-    return params
 
 
 def params_dict_to_array_random(params):

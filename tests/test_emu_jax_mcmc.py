@@ -227,16 +227,12 @@ class TestEmuMcmcIntegration:
         ref_flux = params["k_A_ex"] * (params["A_e"] - A)
         ref_concs = jnp.array([A, Q, P])
 
-        # Use dummy reference MIDs
+        # Use dummy reference MIDs (7 elements: A_12(3), Q_1(2), P_1(2))
         ref_mids = jnp.array([0.01, 0.1, 0.89,  # A_12
-                             0.01, 0.1, 0.89,  # EA_12
-                             0.01, 0.1, 0.89,  # EPQ_12
-                             0.01, 0.99,       # EP_1
-                             0.2, 0.8,         # Q_1
-                             0.2, 0.8])        # P_1
+                             0.2, 0.8,           # Q_1
+                             0.2, 0.8])          # P_1
 
         param_array = params_dict_to_array(params)
-        timepoints = jnp.array([0.0, 100.0, 1000.0])
 
         ll = compute_condition_likelihood_emu(
             params["A_e"],
@@ -249,7 +245,6 @@ class TestEmuMcmcIntegration:
             params["P_e"],
             initial_array,
             emu_network,
-            timepoints,
             precomputed,
         )
 
@@ -287,9 +282,8 @@ class TestEmuMcmcIntegration:
         A, Q, P = enzyme_y_ss[0], enzyme_y_ss[1], enzyme_y_ss[2]
         ref_flux = params["k_A_ex"] * (params["A_e"] - A)
         ref_concs = jnp.array([A, Q, P])
-        ref_mids = jnp.ones(15) / 15  # Dummy uniform MIDs
+        ref_mids = jnp.ones(7) / 7  # Dummy uniform MIDs (A_12(3), Q_1(2), P_1(2))
 
-        timepoints = jnp.array([0.0, 100.0, 1000.0])
         A_e = params["A_e"]
         E_T = params["E_T"]
         Q_e = params["Q_e"]
@@ -299,7 +293,7 @@ class TestEmuMcmcIntegration:
             return compute_condition_likelihood_emu(
                 A_e, E_T, ref_flux, ref_concs, ref_mids,
                 param_array, Q_e, P_e, initial_array,
-                emu_network, timepoints, precomputed,
+                emu_network, precomputed,
             )
 
         param_array = params_dict_to_array(params)
