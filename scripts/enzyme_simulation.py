@@ -545,12 +545,12 @@ def compute_condition_likelihood(
     # Compute net flux from enzyme_ode steady state
     sim_flux = params["k_A_ex"] * (A_e - A)
 
-    # Log-likelihood for flux (normal distribution, std=0.1)
-    flux_std = 0.1
+    # Log-likelihood for flux (normal distribution, std=0.1% of |ref_flux|)
+    flux_std = 0.01 * jnp.abs(ref_flux)
     ll_flux = norm.logpdf(ref_flux, loc=sim_flux, scale=flux_std)
 
-    # Log-likelihood for concentrations (lognormal distribution, std=0.1)
-    conc_std = 0.1
+    # Log-likelihood for concentrations (lognormal distribution, std=0.001)
+    conc_std = 0.01
     ll_concs = jnp.sum(norm.logpdf(
         jnp.log(jnp.maximum(ref_concs, 1e-10)),
         loc=jnp.log(jnp.maximum(sim_concs, 1e-10)),
@@ -575,7 +575,7 @@ def compute_condition_likelihood(
         jnp.array(sim_mids_dict["P_1"]),
     ])
 
-    # Log-likelihood for MIDs (lognormal distribution, std=0.01)
+    # Log-likelihood for MIDs (lognormal distribution, std=0.001)
     # Design choice: multiply by 5 so that a single steady-state MID measurement
     # contributes the same total weight as the 5 instationary timepoints,
     # preventing the timeseries data from dominating the posterior.
@@ -821,12 +821,12 @@ def compute_condition_likelihood_emu(
     # Compute net flux from enzyme_ode steady state
     sim_flux = params["k_A_ex"] * (A_e - A)
 
-    # Log-likelihood for flux (normal distribution, std=0.1)
-    flux_std = 0.1
+    # Log-likelihood for flux (normal distribution, std=0.1% of |ref_flux|)
+    flux_std = 0.01 * jnp.abs(ref_flux)
     ll_flux = norm.logpdf(ref_flux, loc=sim_flux, scale=flux_std)
 
-    # Log-likelihood for concentrations (lognormal distribution, std=0.1)
-    conc_std = 0.1
+    # Log-likelihood for concentrations (lognormal distribution, std=0.001)
+    conc_std = 0.01
     ll_concs = jnp.sum(norm.logpdf(
         jnp.log(jnp.maximum(ref_concs, 1e-10)),
         loc=jnp.log(jnp.maximum(sim_concs, 1e-10)),
@@ -844,7 +844,7 @@ def compute_condition_likelihood_emu(
         sim_mids_dict["P_1"],
     ])
 
-    # Log-likelihood for MIDs (lognormal distribution, std=0.01)
+    # Log-likelihood for MIDs (lognormal distribution, std=0.001)
     # Design choice: multiply by 5 so that a single steady-state MID measurement
     # contributes the same total weight as the 5 instationary timepoints,
     # preventing the timeseries data from dominating the posterior.
@@ -1011,8 +1011,8 @@ def run_mcmc(
     ref_params,
     initial,
     conditions=None,
-    n_warmup=400,
-    n_samples=400,
+    n_warmup=1000,
+    n_samples=1000,
     n_chains=2,
     seed=42,
     use_pure_jax_emu=True,
@@ -1113,7 +1113,7 @@ def run_mcmc(
     param_array_ref = params_dict_to_array(ref_params)
     n_params = len(param_array_ref)
     prior_mean = jnp.ones(n_params) * 1.6  # log(5) ≈ 1.6
-    prior_std = 2.0
+    prior_std = 4.0
 
     # Log-posterior function (JAX-compatible, takes log-transformed params)
     if use_pure_jax_emu:
@@ -1148,7 +1148,7 @@ def run_mcmc(
                 prior_std,
             )
 
-    # Initialize at reference values (in log-space)
+    # Initialize at true values (in log-space)
     rng_key = jax.random.PRNGKey(seed)
     initial_position = jnp.log(param_array_ref)
 
@@ -1165,6 +1165,7 @@ def run_mcmc(
         blackjax.nuts,
         logdensity_fn,
         num_steps=n_warmup,
+        target_acceptance_rate=0.80,
         progress_bar=True,
     )
 

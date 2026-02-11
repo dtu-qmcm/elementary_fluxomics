@@ -1,0 +1,111 @@
+# Glycolysis Thermodynamic Data
+
+[conditions]
+pH = 7.0                    # Cytosolic pH
+temperature = 298.15        # K (25°C)
+ionic_strength = 0.15       # M (physiological)
+membrane_potential = 0.0    # V (no membrane transport)
+
+# Main Glycolysis Pathway
+
+[reactions.GLUT2]
+deltaG_prime = -5.0
+is_transport = true
+proton_balance = 0
+
+[reactions.HEX]
+deltaG_prime = -20.0
+is_transport = false
+proton_balance = 0
+
+[reactions.GPI]
+deltaG_prime = -0.79
+is_transport = false
+proton_balance = 0
+
+[reactions.PFK]
+deltaG_prime = -0.92
+is_transport = false
+proton_balance = 0
+
+[reactions.FBA]
+deltaG_prime = -0.87
+is_transport = false
+proton_balance = 0
+
+[reactions.GLY3PDH]
+deltaG_prime = -10.0
+is_transport = false
+proton_balance = 0
+
+[reactions.TPI]
+deltaG_prime = -0.38
+is_transport = false
+proton_balance = 0
+
+[reactions.GAPD_PGK]
+deltaG_prime = -0.12
+is_transport = false
+proton_balance = 0
+
+[reactions.PGM]
+deltaG_prime = -0.14
+is_transport = false
+proton_balance = 0
+
+[reactions.PYK]
+deltaG_prime = -20.0
+is_transport = false
+proton_balance = 0
+
+[reactions.pyr_drain]
+deltaG_prime = -10.0
+is_transport = true
+proton_balance = 0
+
+[reactions.LDH]
+deltaG_prime = -10.0
+is_transport = false
+proton_balance = 0
+
+# Pentose Phosphate Pathway
+
+[reactions.G6PDH2r_PGL]
+deltaG_prime = -20.0
+is_transport = false
+proton_balance = 0
+
+[reactions.GND]
+deltaG_prime = -20.0
+is_transport = false
+proton_balance = 0
+
+[reactions.RPI]
+deltaG_prime = -1.0
+is_transport = false
+proton_balance = 0
+
+[reactions.RPE]
+deltaG_prime = -1.0
+is_transport = false
+proton_balance = 0
+
+[reactions.r5p_drain]
+deltaG_prime = -10.0
+is_transport = true
+proton_balance = 0
+
+[reactions.TKTL1]
+deltaG_prime = -0.5
+is_transport = false
+proton_balance = 0
+
+[reactions.TKTL2]
+deltaG_prime = -0.5
+is_transport = false
+proton_balance = 0
+
+[reactions.TALA]
+deltaG_prime = -0.5
+is_transport = false
+proton_balance = 0

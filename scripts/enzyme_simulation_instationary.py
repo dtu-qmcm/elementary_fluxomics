@@ -480,12 +480,12 @@ def compute_condition_likelihood(
     # Net flux from enzyme_ode steady state
     sim_flux = params["k_A_ex"] * (A_e - A)
 
-    # Log-likelihood for flux (normal distribution)
-    flux_std = 0.1
+    # Log-likelihood for flux (normal distribution, std=0.1% of |ref_flux|)
+    flux_std = 0.01 * jnp.abs(ref_flux)
     ll_flux = norm.logpdf(ref_flux, loc=sim_flux, scale=flux_std)
 
     # Log-likelihood for concentrations (lognormal)
-    conc_std = 0.1
+    conc_std = 0.01
     ll_concs = jnp.sum(norm.logpdf(
         jnp.log(jnp.maximum(ref_concs, 1e-10)),
         loc=jnp.log(jnp.maximum(sim_concs, 1e-10)),
@@ -606,8 +606,8 @@ def run_mcmc(
     initial,
     conditions=None,
     observation_times=None,
-    n_warmup=400,
-    n_samples=400,
+    n_warmup=1000,
+    n_samples=1000,
     n_chains=2,
     seed=42,
 ):
@@ -717,7 +717,7 @@ def run_mcmc(
     param_array_ref = params_dict_to_array(ref_params)
     n_params = len(param_array_ref)
     prior_mean = jnp.ones(n_params) * 1.6  # log(5) ≈ 1.6
-    prior_std = 2.0
+    prior_std = 4.0
 
     # Log-posterior function (JIT-compiled for performance)
     @jax.jit
@@ -741,6 +741,7 @@ def run_mcmc(
     initial_position = jnp.log(param_array_ref)
 
     print(f"\nInitial position (log-space): {initial_position}")
+    print(f"Initial position (natural): {param_array_ref}")
     print(f"Initial log-posterior: {logdensity_fn(initial_position)}")
     sys.stdout.flush()
 
@@ -752,6 +753,7 @@ def run_mcmc(
         blackjax.nuts,
         logdensity_fn,
         num_steps=n_warmup,
+        target_acceptance_rate=0.80,
         progress_bar=True,
     )
 

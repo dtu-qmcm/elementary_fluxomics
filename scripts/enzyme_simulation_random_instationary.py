@@ -147,9 +147,9 @@ DEFAULT_INITIAL = {
 
 # Experimental conditions for multi-condition fitting
 # Fixed seed ensures identical conditions across all scripts
-# 5 conditions with varying A_e, E_T, Q_e, P_e
+# 30 conditions with varying A_e, E_T, Q_e, P_e
 np.random.seed(12345)
-_n_conditions = 5
+_n_conditions = 10
 EXPERIMENTAL_CONDITIONS = [
     {
         "E_T": float(E_T),
@@ -158,10 +158,10 @@ EXPERIMENTAL_CONDITIONS = [
         "P_e": float(P_e),
     }
     for E_T, A_e, Q_e, P_e in zip(
-        np.exp(np.random.normal(0, 0.5, _n_conditions)),  # E_T log-normal: mean=1, SD=0.5 on log-scale
-        np.exp(np.random.normal(1.5, 0.5, _n_conditions)),  # A_e log-normal: mean=e^1.5≈4.5, SD=0.5
-        np.exp(np.random.normal(0, 0.5, _n_conditions)),  # Q_e log-normal: mean=1, SD=0.5
-        np.exp(np.random.normal(0, 0.5, _n_conditions)),  # P_e log-normal: mean=1, SD=0.5
+        np.exp(np.random.normal(0, 0.8, _n_conditions)),      # E_T: wider range ~[0.2, 5]
+        np.exp(np.random.normal(1.5, 0.8, _n_conditions)),    # A_e: wider range ~[1, 20]
+        np.exp(np.random.normal(0, 0.8, _n_conditions)),      # Q_e: wider range ~[0.2, 5]
+        np.exp(np.random.normal(0, 0.8, _n_conditions)),      # P_e: wider range ~[0.2, 5]
     )
 ]
 NUM_CONDITIONS = len(EXPERIMENTAL_CONDITIONS)
@@ -749,13 +749,13 @@ def compute_condition_likelihood_random(
     # Net flux from enzyme_ode steady state
     sim_flux = params["k_A_ex"] * (A_e - A)
 
-    # Log-likelihood for flux (normal distribution)
-    flux_std = 0.1
+    # Log-likelihood for flux (normal distribution, std=0.1% of |ref_flux|)
+    flux_std = 0.01 * jnp.abs(ref_flux)
     flux_residual = (ref_flux - sim_flux) / flux_std
     ll_flux = -0.5 * flux_residual**2 - jnp.log(flux_std * jnp.sqrt(2 * jnp.pi))
 
     # Log-likelihood for concentrations (lognormal)
-    conc_std = 0.1
+    conc_std = 0.01
     log_ref_concs = jnp.log(jnp.maximum(ref_concs, 1e-10))
     log_sim_concs = jnp.log(jnp.maximum(sim_concs, 1e-10))
     conc_residuals = (log_ref_concs - log_sim_concs) / conc_std
@@ -879,8 +879,8 @@ def run_mcmc_random(
     initial,
     conditions=None,
     observation_times=None,
-    n_warmup=400,
-    n_samples=400,
+    n_warmup=1000,
+    n_samples=1000,
     n_chains=2,
     seed=42,
 ):
@@ -991,7 +991,7 @@ def run_mcmc_random(
     param_array_ref = params_dict_to_array_random(ref_params)
     n_params = len(param_array_ref)
     prior_mean = jnp.ones(n_params) * 1.6  # log(5) ≈ 1.6
-    prior_std = 2.0
+    prior_std = 4.0
 
     # Extract t_final as concrete value before JIT
     t_final = float(observation_times[-1])
@@ -1017,6 +1017,7 @@ def run_mcmc_random(
     initial_position = jnp.log(param_array_ref)
 
     print(f"\nInitial position (log-space): {initial_position}")
+    print(f"Initial position (natural): {param_array_ref}")
     print(f"Initial log-posterior: {logdensity_fn(initial_position)}")
     sys.stdout.flush()
 
@@ -1028,6 +1029,7 @@ def run_mcmc_random(
         blackjax.nuts,
         logdensity_fn,
         num_steps=n_warmup,
+        target_acceptance_rate=0.80,
         progress_bar=True,
     )
 

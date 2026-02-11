@@ -1,6 +1,5 @@
-# Glycolysis Thermodynamic Data
-# Placeholder values: all reactions set to ΔG°' = -4.0 kJ/mol
-# TODO: Replace with actual literature values
+# Glycolysis Thermodynamic Data (Mechanistic FBA)
+# Values matched to glycolysis_gly3p except for FBA1/FBA2 mechanistic steps
 
 [conditions]
 pH = 7.0                    # Cytosolic pH
@@ -16,17 +15,17 @@ is_transport = true
 proton_balance = 0
 
 [reactions.HEX]
-deltaG_prime = -5.0
+deltaG_prime = -20.0
 is_transport = false
 proton_balance = 0
 
 [reactions.GPI]
-deltaG_prime = -5.0
+deltaG_prime = -2.5
 is_transport = false
 proton_balance = 0
 
 [reactions.PFK]
-deltaG_prime = -5.0
+deltaG_prime = -10.98
 is_transport = false
 proton_balance = 0
 
@@ -41,49 +40,49 @@ is_transport = false
 proton_balance = 0
 
 [reactions.GLY3PDH]
-deltaG_prime = -100
+deltaG_prime = -10.0
 is_transport = false
 proton_balance = 0
 
 [reactions.TPI]
-deltaG_prime = -5.0
+deltaG_prime = -1.0
 is_transport = false
 proton_balance = 0
 
 [reactions.GAPD_PGK]
-deltaG_prime = -5.0
+deltaG_prime = -1.39
 is_transport = false
 proton_balance = 0
 
 [reactions.PGM]
-deltaG_prime = -5.0
+deltaG_prime = -2.13
 is_transport = false
 proton_balance = 0
 
 [reactions.PYK]
-deltaG_prime = -5.0
+deltaG_prime = -20.0
 is_transport = false
 proton_balance = 0
 
 [reactions.pyr_drain]
-deltaG_prime = -5.0
+deltaG_prime = -10.0
 is_transport = true
 proton_balance = 0
 
 [reactions.LDH]
-deltaG_prime = -5.0
+deltaG_prime = -10.0
 is_transport = false
 proton_balance = 0
 
 # Pentose Phosphate Pathway
 
 [reactions.G6PDH2r_PGL]
-deltaG_prime = -5.0
+deltaG_prime = -20.0
 is_transport = false
 proton_balance = 0
 
 [reactions.GND]
-deltaG_prime = -5.0
+deltaG_prime = -20.0
 is_transport = false
 proton_balance = 0
 
@@ -98,7 +97,7 @@ is_transport = false
 proton_balance = 0
 
 [reactions.r5p_drain]
-deltaG_prime = -5.0
+deltaG_prime = -10.0
 is_transport = true
 proton_balance = 0
 

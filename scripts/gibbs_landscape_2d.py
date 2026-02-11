@@ -4,11 +4,20 @@
 This script scans a 2D grid of Gibbs energies for FBA1 and FBA2 reactions,
 calculating negative log-likelihood against a reference condition.
 
+Supports two modes:
+- FFE (far-from-equilibrium): Total FBA dG = -5.09 kJ/mol (from glycolysis_thermodynamics.toml)
+- NE (near-equilibrium): Total FBA dG = -0.87 kJ/mol (from glycolysis_thermodynamics_ne.toml)
+
+Usage:
+    uv run python scripts/gibbs_landscape_2d.py --mode ffe
+    uv run python scripts/gibbs_landscape_2d.py --mode ne
+
 Outputs:
 - NLL over the full timecourse (integrated across all timepoints)
 - NLL at the final timepoint only
 """
 
+import argparse
 from pathlib import Path
 import sys
 
@@ -31,8 +40,25 @@ PROJECT_DIR = SCRIPT_DIR.parent
 MODEL_DIR = PROJECT_DIR / "models" / "glycolysis_mech_gly3p"
 REACTIONS_FILE = MODEL_DIR / "reactions.tsv"
 FLUXES_FILE = MODEL_DIR / "glycolysis_fluxes.toml"
-THERMO_FILE = MODEL_DIR / "glycolysis_thermodynamics.toml"
-RESULTS_DIR = PROJECT_DIR / "results" / "gibbs_landscape_2d"
+
+# Mode-specific configurations
+MODE_CONFIGS = {
+    "ffe": {
+        "thermo_file": MODEL_DIR / "glycolysis_thermodynamics.toml",
+        "results_dir": PROJECT_DIR / "results" / "gibbs_landscape_2d_ffe",
+        "total_fba_dg": -5.09,  # FBA1 (-3.0) + FBA2 (-2.0) + margin = -5.09 approx
+        "description": "Far-from-equilibrium (FFE)",
+    },
+    "ne": {
+        "thermo_file": MODEL_DIR / "glycolysis_thermodynamics_ne.toml",
+        "results_dir": PROJECT_DIR / "results" / "gibbs_landscape_2d_ne",
+        "total_fba_dg": -0.87,
+        "description": "Near-equilibrium (NE)",
+    },
+}
+
+# Grid configuration: 10x10 grid with ±50% range around total FBA dG
+N_GRID_POINTS = 20
 
 # Gas constant in kJ/(mol*K)
 R = 8.314e-3
@@ -51,14 +77,6 @@ TARGET_EMUS = {
     "pyr": ["123"],
 }
 
-# Reference condition
-REFERENCE_FBA1 = -3.0
-REFERENCE_FBA2 = -2.0
-
-# Grid scan range
-DG1_VALUES = np.linspace(-1, -4, 30)  # 30 points from -1 to -4
-DG2_VALUES = np.linspace(-1, -4, 30)  # 30 points from -1 to -4
-
 # Log-normal error scale (standard deviation of log-transformed values)
 LOGNORMAL_SCALE = 0.05
 
@@ -66,17 +84,48 @@ LOGNORMAL_SCALE = 0.05
 EPSILON = 1e-10
 
 
+def get_grid_range(total_dg):
+    """Compute FBA1/FBA2 grid range centered around the reference (total_dg/2).
+
+    Args:
+        total_dg: Total FBA Gibbs energy (negative value)
+
+    Returns:
+        Tuple of (min_dg, max_dg) centered at total_dg/2 with ±50% margin
+    """
+    # Reference is at total_dg/2, center grid around it with ±50% of reference
+    ref = total_dg / 2
+    margin = abs(ref) * 0.5
+    dg_min = ref + margin  # less negative (closer to equilibrium)
+    dg_max = ref - margin  # more negative (further from equilibrium)
+    return dg_min, dg_max
+
+
+def get_reference_condition(total_dg):
+    """Get reference condition with equal split of total dG between FBA1 and FBA2.
+
+    Args:
+        total_dg: Total FBA Gibbs energy (negative value)
+
+    Returns:
+        Tuple of (FBA1_dg, FBA2_dg) each equal to total_dg / 2
+    """
+    # Equal split: each reaction gets half of total dG
+    half_dg = total_dg / 2
+    return half_dg, half_dg
+
+
 # ============================================================================
 # Helper Functions
 # ============================================================================
 
 
-def create_output_directory():
+def create_output_directory(results_dir):
     """Create output directory."""
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"Output directory: {RESULTS_DIR}")
+    results_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Output directory: {results_dir}")
     sys.stdout.flush()
-    return RESULTS_DIR
+    return results_dir
 
 
 def load_thermo_data(filepath, overrides=None):
@@ -131,8 +180,13 @@ def load_fluxes_from_toml(flux_filepath):
     return fluxes
 
 
-def run_simulation(gibbs_overrides, timepoints):
+def run_simulation(gibbs_overrides, timepoints, thermo_file):
     """Run INST simulation for timecourse and SS simulation for steady-state.
+
+    Args:
+        gibbs_overrides: Dict of reaction_id -> deltaG overrides
+        timepoints: List of timepoints for INST simulation
+        thermo_file: Path to thermodynamics TOML file
 
     Returns:
         Tuple of (mdvs_timecourse, mdvs_ss) where:
@@ -143,7 +197,7 @@ def run_simulation(gibbs_overrides, timepoints):
     model.read_from_file(str(REACTIONS_FILE))
 
     net_fluxes = load_fluxes_from_toml(FLUXES_FILE)
-    thermo, temperature = load_thermo_data(THERMO_FILE, overrides=gibbs_overrides)
+    thermo, temperature = load_thermo_data(thermo_file, overrides=gibbs_overrides)
 
     reversible_rxns = {
         fid.rsplit("_", 1)[0] for fid in model.totalfluxids if fid.endswith("_f")
@@ -177,7 +231,7 @@ def run_simulation(gibbs_overrides, timepoints):
 
         for metab in model.metabolites:
             if metab == "FBA_dhap":
-                isim.set_concentration(metab, 0.1)
+                isim.set_concentration(metab, 0.01)
             else:
                 isim.set_concentration(metab, 1.0)
 
@@ -290,20 +344,28 @@ def compute_nll_ss(mdvs_ref_ss, mdvs_test_ss, scale):
     return total_nll
 
 
-def run_2d_scan(dG1_values, dG2_values, timepoints):
+def run_2d_scan(dG1_values, dG2_values, timepoints, thermo_file, ref_fba1, ref_fba2):
     """Run 2D scan over FBA1 and FBA2 Gibbs energies.
 
     Compares each point against the reference condition.
+
+    Args:
+        dG1_values: Array of FBA1 Gibbs energy values
+        dG2_values: Array of FBA2 Gibbs energy values
+        timepoints: List of timepoints for simulation
+        thermo_file: Path to thermodynamics TOML file
+        ref_fba1: Reference FBA1 Gibbs energy
+        ref_fba2: Reference FBA2 Gibbs energy
 
     Returns:
         DataFrame with columns: FBA1_deltaG, FBA2_deltaG, nll_timecourse, nll_final
         and dict with reference NLL values
     """
-    print(f"Running reference simulation (FBA1={REFERENCE_FBA1}, FBA2={REFERENCE_FBA2})...")
+    print(f"Running reference simulation (FBA1={ref_fba1:.3f}, FBA2={ref_fba2:.3f})...")
     sys.stdout.flush()
 
-    ref_overrides = {"FBA1": REFERENCE_FBA1, "FBA2": REFERENCE_FBA2}
-    mdvs_ref_tc, mdvs_ref_ss = run_simulation(ref_overrides, timepoints)
+    ref_overrides = {"FBA1": ref_fba1, "FBA2": ref_fba2}
+    mdvs_ref_tc, mdvs_ref_ss = run_simulation(ref_overrides, timepoints, thermo_file)
 
     # Compute reference NLL (reference vs itself)
     print("Computing reference NLL (reference vs itself)...")
@@ -326,7 +388,7 @@ def run_2d_scan(dG1_values, dG2_values, timepoints):
             thermo_overrides = {"FBA1": dG1, "FBA2": dG2}
 
             try:
-                mdvs_test_tc, mdvs_test_ss = run_simulation(thermo_overrides, timepoints)
+                mdvs_test_tc, mdvs_test_ss = run_simulation(thermo_overrides, timepoints, thermo_file)
 
                 # Calculate NLL over full timecourse
                 nll_timecourse = compute_nll(mdvs_ref_tc, mdvs_test_tc, LOGNORMAL_SCALE)
@@ -352,8 +414,17 @@ def run_2d_scan(dG1_values, dG2_values, timepoints):
     return pd.DataFrame(results), ref_nll
 
 
-def plot_landscape(df, value_col, title_suffix, output_path):
-    """Plot 2D NLL landscape as heatmap."""
+def plot_landscape(df, value_col, title_suffix, output_path, ref_fba1, ref_fba2):
+    """Plot 2D NLL landscape as heatmap.
+
+    Args:
+        df: DataFrame with FBA1_deltaG, FBA2_deltaG, and value columns
+        value_col: Column name for values to plot
+        title_suffix: Suffix for plot title
+        output_path: Path to save the plot
+        ref_fba1: Reference FBA1 Gibbs energy
+        ref_fba2: Reference FBA2 Gibbs energy
+    """
     # Pivot for heatmap (FBA2 on x-axis, FBA1 on y-axis)
     pivot = df.pivot(index="FBA1_deltaG", columns="FBA2_deltaG", values=value_col)
 
@@ -375,12 +446,12 @@ def plot_landscape(df, value_col, title_suffix, output_path):
 
     # Mark the reference point
     ax.plot(
-        REFERENCE_FBA2,
-        REFERENCE_FBA1,
+        ref_fba2,
+        ref_fba1,
         "o",
         color="red",
         markersize=10,
-        label=f"Reference (FBA1={REFERENCE_FBA1}, FBA2={REFERENCE_FBA2})",
+        label=f"Reference (FBA1={ref_fba1:.3f}, FBA2={ref_fba2:.3f})",
     )
 
     ax.set_xlabel("FBA2 dG (kJ/mol)", fontsize=12)
@@ -406,23 +477,65 @@ def plot_landscape(df, value_col, title_suffix, output_path):
 # ============================================================================
 
 
+def parse_args():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description="2D Gibbs Energy Landscape Analysis",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  uv run python scripts/gibbs_landscape_2d.py --mode ffe
+  uv run python scripts/gibbs_landscape_2d.py --mode ne
+        """,
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["ffe", "ne"],
+        required=True,
+        help="Analysis mode: ffe (far-from-equilibrium) or ne (near-equilibrium)",
+    )
+    return parser.parse_args()
+
+
 def main():
     """Run 2D Gibbs energy landscape analysis."""
+    args = parse_args()
+    mode = args.mode
+
+    # Get mode-specific configuration
+    config = MODE_CONFIGS[mode]
+    thermo_file = config["thermo_file"]
+    results_dir = config["results_dir"]
+    total_fba_dg = config["total_fba_dg"]
+    description = config["description"]
+
+    # Compute grid range (±50% of total FBA dG)
+    dg_min, dg_max = get_grid_range(total_fba_dg)
+    dG1_values = np.linspace(dg_min, dg_max, N_GRID_POINTS)
+    dG2_values = np.linspace(dg_min, dg_max, N_GRID_POINTS)
+
+    # Reference condition: equal split of total dG between FBA1 and FBA2
+    ref_fba1, ref_fba2 = get_reference_condition(total_fba_dg)
+
     print("=" * 80)
-    print("2D Gibbs Energy Landscape - Negative Log-Likelihood Analysis")
+    print(f"2D Gibbs Energy Landscape - {description}")
     print("=" * 80)
     sys.stdout.flush()
 
-    output_dir = create_output_directory()
+    output_dir = create_output_directory(results_dir)
 
     # Filter timepoints
     filtered_timepoints = [t for t in TIMEPOINTS if t > 0]
 
+    print(f"\nMode: {mode.upper()} ({description})")
+    print(f"Thermodynamics file: {thermo_file}")
     print(f"\nGrid configuration:")
-    print(f"  FBA1 range: {DG1_VALUES.min():.1f} to {DG1_VALUES.max():.1f} kJ/mol ({len(DG1_VALUES)} points)")
-    print(f"  FBA2 range: {DG2_VALUES.min():.1f} to {DG2_VALUES.max():.1f} kJ/mol ({len(DG2_VALUES)} points)")
-    print(f"  Reference: FBA1={REFERENCE_FBA1}, FBA2={REFERENCE_FBA2} kJ/mol")
-    print(f"  Total grid points: {len(DG1_VALUES) * len(DG2_VALUES)}")
+    print(f"  Total FBA dG: {total_fba_dg:.2f} kJ/mol")
+    print(f"  Grid range: {dg_min:.3f} to {dg_max:.3f} kJ/mol (±50% of total)")
+    print(f"  FBA1 range: {dG1_values.min():.3f} to {dG1_values.max():.3f} kJ/mol ({len(dG1_values)} points)")
+    print(f"  FBA2 range: {dG2_values.min():.3f} to {dG2_values.max():.3f} kJ/mol ({len(dG2_values)} points)")
+    print(f"  Reference: FBA1={ref_fba1:.3f}, FBA2={ref_fba2:.3f} kJ/mol (equal split)")
+    print(f"  Total grid points: {len(dG1_values) * len(dG2_values)}")
     print(f"  Timepoints: {len(filtered_timepoints)} (from {filtered_timepoints[0]:.4f}s to {filtered_timepoints[-1]:.4f}s)")
     sys.stdout.flush()
 
@@ -432,7 +545,7 @@ def main():
     print("=" * 80)
     sys.stdout.flush()
 
-    df, ref_nll = run_2d_scan(DG1_VALUES, DG2_VALUES, filtered_timepoints)
+    df, ref_nll = run_2d_scan(dG1_values, dG2_values, filtered_timepoints, thermo_file, ref_fba1, ref_fba2)
 
     # Save results
     print("\n" + "=" * 80)
@@ -453,6 +566,8 @@ def main():
         "nll_timecourse",
         "(Full Timecourse)",
         output_dir / "gibbs_landscape_2d_timecourse.png",
+        ref_fba1,
+        ref_fba2,
     )
 
     # Plot steady-state NLL landscape
@@ -463,12 +578,18 @@ def main():
         "nll_final",
         "(Steady-State)",
         output_dir / "gibbs_landscape_2d_final.png",
+        ref_fba1,
+        ref_fba2,
     )
 
     # Summary
     print("\n" + "=" * 80)
     print("Analysis Complete!")
     print("=" * 80)
+
+    print(f"\nMode: {mode.upper()} ({description})")
+    print(f"Total FBA dG: {total_fba_dg:.2f} kJ/mol")
+    print(f"Reference: FBA1={ref_fba1:.3f}, FBA2={ref_fba2:.3f} kJ/mol")
 
     print(f"\nReference NLL (reference vs itself):")
     print(f"  Timecourse: {ref_nll['timecourse']:.2f}")
@@ -478,7 +599,7 @@ def main():
     min_idx = df["nll_timecourse"].idxmin()
     print(
         f"  Min: {df['nll_timecourse'].min():.2f} at "
-        f"FBA1={df.loc[min_idx, 'FBA1_deltaG']:.2f}, FBA2={df.loc[min_idx, 'FBA2_deltaG']:.2f}"
+        f"FBA1={df.loc[min_idx, 'FBA1_deltaG']:.3f}, FBA2={df.loc[min_idx, 'FBA2_deltaG']:.3f}"
     )
     print(f"  Max: {df['nll_timecourse'].max():.2f}")
 
@@ -486,7 +607,7 @@ def main():
     min_idx = df["nll_final"].idxmin()
     print(
         f"  Min: {df['nll_final'].min():.2f} at "
-        f"FBA1={df.loc[min_idx, 'FBA1_deltaG']:.2f}, FBA2={df.loc[min_idx, 'FBA2_deltaG']:.2f}"
+        f"FBA1={df.loc[min_idx, 'FBA1_deltaG']:.3f}, FBA2={df.loc[min_idx, 'FBA2_deltaG']:.3f}"
     )
     print(f"  Max: {df['nll_final'].max():.2f}")
 

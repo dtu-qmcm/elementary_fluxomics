@@ -47,6 +47,7 @@ try:
         compute_rates,
         ode_system,
         simulate_ode_to_steady_state,
+        simulate_enzyme_to_steady_state_jax,
         get_steady_state,
         compute_forward_backward_fluxes,
         params_array_to_dict,
@@ -68,6 +69,7 @@ except ModuleNotFoundError:
         compute_rates,
         ode_system,
         simulate_ode_to_steady_state,
+        simulate_enzyme_to_steady_state_jax,
         get_steady_state,
         compute_forward_backward_fluxes,
         params_array_to_dict,
@@ -96,8 +98,8 @@ def compute_log_likelihood(
     sim_fluxes,
     obs_concentrations,
     sim_concentrations,
-    flux_std=0.1,
-    conc_std=0.1,
+    flux_std_rel=0.01,
+    conc_std=0.01,
 ):
     """Compute total log-likelihood of observations given simulated values.
 
@@ -111,10 +113,10 @@ def compute_log_likelihood(
         Observed concentration values {metabolite_id: value}
     sim_concentrations : dict
         Simulated concentration values {metabolite_id: value}
-    flux_std : float
-        Standard deviation for flux normal distribution (default 0.1)
+    flux_std_rel : float
+        Relative standard deviation for flux (0.1% of |obs flux|)
     conc_std : float
-        Standard deviation for concentration lognormal distribution (default 0.1)
+        Standard deviation for concentration lognormal distribution (default 0.001)
 
     Returns
     -------
@@ -127,11 +129,12 @@ def compute_log_likelihood(
         "total": 0.0,
     }
 
-    # 1. Fluxes: Normal distribution
+    # 1. Fluxes: Normal distribution (std = 0.1% of |obs flux|)
     for flux_id in obs_fluxes:
         if flux_id in sim_fluxes:
             obs = obs_fluxes[flux_id]
             sim = sim_fluxes[flux_id]
+            flux_std = flux_std_rel * jnp.abs(obs)
             # Normal log-likelihood: -0.5 * ((obs - sim) / sigma)^2 - log(sigma * sqrt(2*pi))
             residual = (obs - sim) / flux_std
             log_likelihood["fluxes"] += -0.5 * residual**2 - jnp.log(flux_std * jnp.sqrt(2 * jnp.pi))
@@ -299,7 +302,7 @@ def compute_condition_likelihood(
     params["k_pq_r"] = k_pq_r
 
     # Run ODE simulation to steady state
-    sol = simulate_ode_to_steady_state_jax(params, initial_array)
+    sol = simulate_enzyme_to_steady_state_jax(params, initial_array)
 
     # Check if solver failed
     solver_failed = jnp.any(jnp.isnan(sol.ys))
@@ -314,12 +317,12 @@ def compute_condition_likelihood(
     # Compute net flux (exchange flux at steady state)
     sim_flux = params["k_A_ex"] * (A_e - A)
 
-    # Log-likelihood for flux (normal distribution, std=0.1)
-    flux_std = 0.1
+    # Log-likelihood for flux (normal distribution, std=0.1% of |ref_flux|)
+    flux_std = 0.01 * jnp.abs(ref_flux)
     ll_flux = norm.logpdf(ref_flux, loc=sim_flux, scale=flux_std)
 
-    # Log-likelihood for concentrations (lognormal distribution, std=0.1)
-    conc_std = 0.1
+    # Log-likelihood for concentrations (lognormal distribution, std=0.01)
+    conc_std = 0.01
     ll_concs = jnp.sum(norm.logpdf(
         jnp.log(jnp.maximum(ref_concs, 1e-10)),
         loc=jnp.log(jnp.maximum(sim_concs, 1e-10)),
@@ -403,8 +406,8 @@ def run_mcmc(
     ref_params,
     initial,
     conditions=None,
-    n_warmup=400,
-    n_samples=400,
+    n_warmup=1000,
+    n_samples=1000,
     n_chains=2,
     seed=42,
 ):
@@ -489,7 +492,7 @@ def run_mcmc(
     param_array_ref = params_dict_to_array(ref_params)
     n_params = len(param_array_ref)
     prior_mean = jnp.ones(n_params) * 1.6  # log(5) ≈ 1.6
-    prior_std = 2.0
+    prior_std = 4.0
 
     # Log-posterior function (JAX-compatible, takes log-transformed params)
     def logdensity_fn(log_param_array):
@@ -503,7 +506,7 @@ def run_mcmc(
             prior_std,
         )
 
-    # Initialize at reference values (in log-space)
+    # Initialize at true values (in log-space)
     rng_key = jax.random.PRNGKey(seed)
     initial_position = jnp.log(param_array_ref)
 
@@ -520,6 +523,7 @@ def run_mcmc(
         blackjax.nuts,
         logdensity_fn,
         num_steps=n_warmup,
+        target_acceptance_rate=0.80,
         progress_bar=True,
     )
 

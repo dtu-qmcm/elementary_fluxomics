@@ -88,10 +88,10 @@ EXPERIMENTAL_CONDITIONS = [
         "P_e": float(P_e),
     }
     for E_T, A_e, Q_e, P_e in zip(
-        np.exp(np.random.normal(0, 0.5, _n_conditions)),
-        np.exp(np.random.normal(1.5, 0.5, _n_conditions)),
-        np.exp(np.random.normal(0, 0.5, _n_conditions)),
-        np.exp(np.random.normal(0, 0.5, _n_conditions)),
+        np.exp(np.random.normal(0, 0.8, _n_conditions)),      # E_T: wider range ~[0.2, 5]
+        np.exp(np.random.normal(1.5, 0.8, _n_conditions)),    # A_e: wider range ~[1, 20]
+        np.exp(np.random.normal(0, 0.8, _n_conditions)),      # Q_e: wider range ~[0.2, 5]
+        np.exp(np.random.normal(0, 0.8, _n_conditions)),      # P_e: wider range ~[0.2, 5]
     )
 ]
 NUM_CONDITIONS = len(EXPERIMENTAL_CONDITIONS)
