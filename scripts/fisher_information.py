@@ -45,7 +45,7 @@ try:
         simulate_ss_mdvs_pure_jax,
         simulate_inst_mdvs_pure_jax,
     )
-    from scripts.style import apply_style, COLORS, DOUBLE_COL
+    from scripts.style import apply_style, COLORS, SINGLE_COL, DOUBLE_COL
 except ModuleNotFoundError:
     from enzyme_utils import (
         DEFAULT_PARAMS,
@@ -64,7 +64,7 @@ except ModuleNotFoundError:
         simulate_ss_mdvs_pure_jax,
         simulate_inst_mdvs_pure_jax,
     )
-    from style import apply_style, COLORS, DOUBLE_COL
+    from style import apply_style, COLORS, SINGLE_COL, DOUBLE_COL
 
 
 SCRIPT_DIR = Path(__file__).parent
@@ -245,6 +245,59 @@ def compute_fim(predict_fn, log_params, sigma_inv_sq, *args):
     return J.T @ jnp.diag(sigma_inv_sq) @ J
 
 
+def find_identifiable_parameters(fim, param_names, threshold=1e-4):
+    """Eigenvalue method to find maximal identifiable parameter subset.
+
+    Iteratively removes the parameter most associated with the smallest
+    eigenvalue until all remaining eigenvalues exceed the threshold.
+
+    The FIM submatrix is normalised to correlation form (unit diagonal)
+    at each iteration so that eigenvalues are scale-independent and the
+    threshold has a consistent meaning across parameters and scenarios.
+
+    Algorithm from Quaiser & Mönnigmann, BMC Syst Biol 2009 (page 6).
+
+    Returns dict with keys:
+      identifiable, unidentifiable, removal_eigenvalues, eigenvalue_trace
+    where eigenvalue_trace[i] is the smallest eigenvalue when i parameters
+    have been removed (includes the final above-threshold step).
+    """
+    fim_np = np.array(fim)
+    remaining = list(range(len(param_names)))
+    removed = []
+    removal_eigenvalues = []
+    eigenvalue_trace = []  # smallest eigenvalue at each iteration
+
+    while remaining:
+        idx = np.array(remaining)
+        sub_fim = fim_np[np.ix_(idx, idx)]
+
+        # Normalise to correlation form: F_norm = D^{-1/2} F D^{-1/2}
+        d = np.sqrt(np.abs(np.diag(sub_fim)))
+        d = np.where(d > 0, d, 1.0)
+        norm_fim = sub_fim / np.outer(d, d)
+
+        eigenvalues, eigenvectors = np.linalg.eigh(norm_fim)
+        eigenvalue_trace.append(eigenvalues[0])
+
+        if eigenvalues[0] >= threshold:
+            break
+
+        # Find parameter with largest component in smallest eigenvector
+        worst = np.argmax(np.abs(eigenvectors[:, 0]))
+        removal_eigenvalues.append(eigenvalues[0])
+        removed.append(remaining.pop(worst))
+
+    identifiable = [param_names[i] for i in remaining]
+    unidentifiable = [param_names[i] for i in removed]
+    return {
+        "identifiable": identifiable,
+        "unidentifiable": unidentifiable,
+        "removal_eigenvalues": removal_eigenvalues,
+        "eigenvalue_trace": eigenvalue_trace,
+    }
+
+
 def analyze_fim(fim, scenario_name):
     """Eigendecomposition and CRLB analysis."""
     fim_np = np.array(fim)
@@ -404,6 +457,94 @@ def plot_correlation_heatmaps(fim_nl, fim_ss, fim_inst):
     return fig
 
 
+def plot_identifiability_summary(ident_results, threshold=1e-4):
+    """Two-panel figure: eigenvalue progression (left) and grid summary (right).
+
+    Left panel: smallest normalised eigenvalue vs number of removed parameters
+    (after Quaiser & Mönnigmann, BMC Syst Biol 2009, Figure 1).
+    Right panel: identifiable/unidentifiable grid with removal order.
+    """
+    apply_style()
+    from matplotlib.patches import Patch, Rectangle
+    from cmcrameri import cm
+
+    scenarios = ["No Labeling", "Steady-State", "Instationary"]
+    labels = [n.replace("k_", "") for n in MCMC_PARAM_NAMES]
+    n_params = len(labels)
+    n_scenarios = len(scenarios)
+
+    fig, (ax_eig, ax_grid) = plt.subplots(
+        1, 2, figsize=(DOUBLE_COL, DOUBLE_COL * 0.45),
+        gridspec_kw={"width_ratios": [1.2, 1], "wspace": 0.35},
+    )
+
+    # ---- Left panel: eigenvalue progression ----
+    for scenario in scenarios:
+        trace = ident_results[scenario]["eigenvalue_trace"]
+        n_removed = np.arange(len(trace))
+        # Clip small/negative values for log scale display
+        trace_plot = np.maximum(np.abs(trace), 1e-20)
+        ax_eig.plot(n_removed, trace_plot, "o-",
+                    color=COLORS[scenario], label=scenario, markersize=4)
+
+    ax_eig.axhline(threshold, color="0.4", ls="--", lw=0.8,
+                    label=f"$\\varepsilon$ = {threshold:.0e}")
+    ax_eig.set_yscale("log")
+    ax_eig.set_xlabel("Number of parameters removed")
+    ax_eig.set_ylabel("Smallest eigenvalue (normalised FIM)")
+    ax_eig.set_xticks(range(n_params))
+    ax_eig.legend(fontsize=6)
+
+    # ---- Right panel: identifiability grid ----
+    grid = np.zeros((n_params, n_scenarios))
+    removal_order = np.full((n_params, n_scenarios), -1, dtype=int)
+
+    # Use batlow endpoints for identifiable/unidentifiable
+    color_ident = cm.batlow(0.85)
+    color_unident = cm.batlow(0.15)
+
+    for j, scenario in enumerate(scenarios):
+        identifiable = ident_results[scenario]["identifiable"]
+        unidentifiable = ident_results[scenario]["unidentifiable"]
+        for name in identifiable:
+            i = MCMC_PARAM_NAMES.index(name)
+            grid[i, j] = 1.0
+        for order, name in enumerate(unidentifiable):
+            i = MCMC_PARAM_NAMES.index(name)
+            removal_order[i, j] = order + 1
+
+    for i in range(n_params):
+        for j in range(n_scenarios):
+            color = color_ident if grid[i, j] == 1.0 else color_unident
+            ax_grid.add_patch(Rectangle(
+                (j - 0.5, i - 0.5), 1, 1,
+                facecolor=color, edgecolor="white", linewidth=0.5,
+            ))
+            if removal_order[i, j] > 0:
+                ax_grid.text(j, i, str(removal_order[i, j]),
+                             ha="center", va="center", fontsize=7,
+                             color="white", fontweight="bold")
+
+    ax_grid.set_xlim(-0.5, n_scenarios - 0.5)
+    ax_grid.set_ylim(n_params - 0.5, -0.5)
+    ax_grid.set_xticks(range(n_scenarios))
+    ax_grid.set_xticklabels(scenarios, rotation=30, ha="right")
+    ax_grid.set_yticks(range(n_params))
+    ax_grid.set_yticklabels(labels)
+    ax_grid.set_xlabel("Experiment type")
+    ax_grid.set_ylabel("Parameter")
+    ax_grid.set_aspect("auto")
+
+    legend_elements = [
+        Patch(facecolor=color_ident, label="Identifiable"),
+        Patch(facecolor=color_unident, label="Unidentifiable"),
+    ]
+    ax_grid.legend(handles=legend_elements, fontsize=6,
+                   loc="upper left", bbox_to_anchor=(1.02, 1.0))
+
+    return fig
+
+
 # =========================================================================
 # Main
 # =========================================================================
@@ -481,6 +622,28 @@ def main():
     )
     res_inst = analyze_fim(fim_inst, "Instationary")
 
+    # ---- Identifiability analysis ----
+    print("\n" + "=" * 60)
+    print("Identifiability Analysis (eigenvalue method)")
+    print("=" * 60)
+    sys.stdout.flush()
+
+    ident_results = {}
+    for name, fim in [("No Labeling", fim_nl), ("Steady-State", fim_ss),
+                      ("Instationary", fim_inst)]:
+        result = find_identifiable_parameters(fim, list(MCMC_PARAM_NAMES))
+        ident_results[name] = result
+        identifiable = result["identifiable"]
+        unidentifiable = result["unidentifiable"]
+        removal_eigs = result["removal_eigenvalues"]
+        print(f"\n  {name}:")
+        print(f"    Identifiable ({len(identifiable)}): {identifiable}")
+        if unidentifiable:
+            print(f"    Unidentifiable ({len(unidentifiable)}, removal order):")
+            for i, (p, ev) in enumerate(zip(unidentifiable, removal_eigs)):
+                print(f"      {i + 1}. {p}  (eigenvalue = {ev:.4e})")
+        sys.stdout.flush()
+
     # Collect results
     all_results = {
         "No Labeling": res_nl,
@@ -524,6 +687,14 @@ def main():
     fig.savefig(FIGURES_DIR / "fim_correlations.pdf")
     print(f"Figures saved to {RESULTS_DIR / 'fim_correlations.png'}")
     print(f"                 {FIGURES_DIR / 'fim_correlations.pdf'}")
+    plt.close(fig)
+
+    # Plot identifiability summary
+    fig = plot_identifiability_summary(ident_results)
+    fig.savefig(RESULTS_DIR / "fim_identifiability.png")
+    fig.savefig(FIGURES_DIR / "fim_identifiability.pdf")
+    print(f"Figures saved to {RESULTS_DIR / 'fim_identifiability.png'}")
+    print(f"                 {FIGURES_DIR / 'fim_identifiability.pdf'}")
     plt.close(fig)
 
     print("\n" + "=" * 80)
