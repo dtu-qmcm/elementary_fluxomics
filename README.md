@@ -25,17 +25,14 @@ uv sync
 
 | Script | Description |
 |--------|-------------|
-| `isotopomer_simulation.py` | Isotopomer ODE tracking all labeled/unlabeled species (18-state system) |
-| `isotopomer_simulation_random.py` | Isotopomer ODE for the random uni-bi mechanism (20-state system) |
-| `isotopomer_network.py` | Isotopomer network definition for the ordered enzyme mechanism |
-| `isotopomer_network_random.py` | Isotopomer network definition for the random uni-bi mechanism |
 | `emu_jax.py` | JAX-compatible EMU MDV simulation with matrix exponential INST integration |
 
 ### Shared utilities
 
 | Script | Description |
 |--------|-------------|
-| `enzyme_utils.py` | Shared constants and functions including Wegscheider thermodynamic constraints |
+| `enzyme_utils.py` | Shared constants and functions for ordered mechanism including Wegscheider constraints |
+| `enzyme_utils_random.py` | Shared constants and functions for random mechanism |
 
 ### Gibbs energy analysis
 
@@ -46,13 +43,6 @@ uv sync
 | `gibbs_comparison_fba1_fixed.py` | 1D scan of FBA2 with FBA1 fixed at -3.0 kJ/mol, with timecourse |
 | `gibbs_comparison_fba2_fixed.py` | 1D scan of FBA1 with FBA2 fixed at -2.0 kJ/mol, with timecourse |
 | `gibbs_timecourse_chisquared.py` | Timecourse chi-squared analysis where FBA1 + FBA2 = -5 kJ/mol |
-
-### Serialization
-
-| Script | Description |
-|--------|-------------|
-| `emu_network_serializer.py` | Serialize EMU network structure from freeflux for JAX-traceable simulation |
-| `serialize_emu_network_random.py` | Serialize EMU network for the random uni-bi mechanism |
 
 ### Model comparison
 
@@ -69,19 +59,6 @@ uv run pytest tests/ -v
 ```
 
 ### Test files
-
-#### `test_flux_validation.py` — Isotopomer vs enzyme ODE flux consistency
-
-| Test | Description |
-|------|-------------|
-| `test_steady_state_concentrations_match` | Summed isotopomer concentrations match enzyme ODE steady state |
-| `test_net_fluxes_match` | Net fluxes from both simulations agree |
-| `test_forward_backward_fluxes_match` | Forward/backward fluxes match between simulations |
-| `test_enzyme_conservation` | Enzyme conservation E + EA + EPQ + EP = E_T holds |
-| `test_mass_balance_at_steady_state` | Derivatives are zero at steady state |
-| `test_flux_balance_at_steady_state` | Flux balances satisfied (A, Q, P, enzyme intermediates) |
-| `test_all_isotopomers_non_negative` | All isotopomer concentrations are non-negative |
-| `test_isotopomer_fractions_sum_to_one` | Isotopomer fractions sum to 1 for each metabolite |
 
 #### `test_emu_jax.py` — JAX EMU implementation vs freeflux
 

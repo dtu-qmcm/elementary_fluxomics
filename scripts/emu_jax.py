@@ -559,6 +559,7 @@ def run_freeflux_inst_simulation(
     fluxes: dict[str, float],
     concentrations: dict[str, float],
     use_jax: bool = True,
+    pure_unlabeled: bool = False,
 ) -> dict[str, dict[float, np.ndarray]]:
     """Run INST simulation using freeflux for setup and optionally JAX for computation.
 
@@ -586,6 +587,10 @@ def run_freeflux_inst_simulation(
         Concentration values {metabolite_id: value}
     use_jax : bool
         If True, use JAX implementation; if False, use freeflux native
+    pure_unlabeled : bool
+        If True, override initial states and substrate MDVs to use pure unlabeled
+        [1, 0, ...] instead of natural abundance, matching build_emu_network().
+        Only applies when use_jax=True.
 
     Returns
     -------
@@ -631,6 +636,46 @@ def run_freeflux_inst_simulation(
         initial_X, initial_Y = get_initial_states(isim.model)
         substrate_mdvs = get_substrate_mdvs(isim.model)
         source_emu_lookup = build_source_emu_lookup(isim.model)
+
+        if pure_unlabeled:
+            # Override initial states with pure unlabeled (matching build_emu_network)
+            # Identify labeled substrate EMU IDs
+            labeled_emu_ids = set()
+            for emu in isim.model.substrate_MDVs:
+                emu_id = _get_emu_id_str(emu)
+                parts = emu_id.rsplit("_", 1)
+                metab_name = parts[0] if len(parts) == 2 else emu_id
+                if metab_name == labeling_substrate:
+                    labeled_emu_ids.add(emu_id)
+
+            # Override initial_X: pure unlabeled [1, 0, ...]
+            for size in initial_X:
+                arr = initial_X[size]
+                pure = np.zeros_like(arr)
+                pure[:, 0] = 1.0
+                initial_X[size] = pure
+
+            # Override initial_Y: pure unlabeled for all source EMUs at t=0
+            # (labeled substrate MDVs are applied at simulation time, not in initial_Y)
+            for size in initial_Y:
+                arr = initial_Y[size]
+                pure = np.zeros_like(arr)
+                pure[:, 0] = 1.0
+                initial_Y[size] = pure
+
+            # Override substrate_mdvs: recompute without natural abundance
+            pat = labeling_pattern[0] if isinstance(labeling_pattern, list) else labeling_pattern
+            pur = labeling_purity[0] if isinstance(labeling_purity, list) else labeling_purity
+            pct = labeling_percentage[0] if isinstance(labeling_percentage, list) else labeling_percentage
+            for emu, mdv in list(substrate_mdvs.items()):
+                emu_id = _get_emu_id_str(emu) if hasattr(emu, 'id') else str(emu)
+                if emu_id in labeled_emu_ids:
+                    pure_mdv = _compute_substrate_mdv_pure(emu, pat, pur, pct)
+                    substrate_mdvs[emu] = pure_mdv
+                else:
+                    pure_mdv = np.zeros_like(mdv)
+                    pure_mdv[0] = 1.0
+                    substrate_mdvs[emu] = pure_mdv
 
         mdvs = simulate_inst_mdvs_jax(
             matrices=matrices,
@@ -786,23 +831,377 @@ def main():
 # =============================================================================
 
 
-def load_emu_network_structure(network_path: Path) -> dict:
-    """Load serialized EMU network structure from JSON.
+def extract_matrix_structure_A(lambA, flux_ids, base_flux_values):
+    """Extract sparse structure of A matrix via numerical differentiation.
 
     Parameters
     ----------
-    network_path : Path
-        Path to emu_network.json file
+    lambA : callable
+        Lambda function that takes flux values and returns A matrix
+    flux_ids : list
+        List of flux IDs in the order expected by lambA
+    base_flux_values : list
+        Base flux values for numerical differentiation
+
+    Returns
+    -------
+    list
+        List of (row, col, flux_idx, coefficient) tuples
+    """
+    eps = 1e-8
+    base_flux_array = np.array(base_flux_values, dtype=float)
+    base_A = np.array(lambA(*base_flux_array))
+
+    structure = []
+
+    for row in range(base_A.shape[0]):
+        for col in range(base_A.shape[1]):
+            if abs(base_A[row, col]) > 1e-10:
+                is_constant = True
+                for flux_idx in range(len(flux_ids)):
+                    perturbed = base_flux_array.copy()
+                    perturbed[flux_idx] += eps
+                    perturbed_A = np.array(lambA(*perturbed))
+                    if abs(perturbed_A[row, col] - base_A[row, col]) > 1e-10:
+                        is_constant = False
+                        break
+                if is_constant and abs(base_A[row, col]) > 1e-10:
+                    structure.append((int(row), int(col), -1, float(base_A[row, col])))
+
+    for flux_idx in range(len(flux_ids)):
+        perturbed = base_flux_array.copy()
+        perturbed[flux_idx] += eps
+        perturbed_A = np.array(lambA(*perturbed))
+        dA = (perturbed_A - base_A) / eps
+
+        for row in range(dA.shape[0]):
+            for col in range(dA.shape[1]):
+                if abs(dA[row, col]) > 1e-10:
+                    structure.append((int(row), int(col), int(flux_idx), float(dA[row, col])))
+
+    return structure
+
+
+def extract_matrix_structure_B(lambB, flux_ids, base_flux_values):
+    """Extract sparse structure of B matrix via numerical differentiation.
+
+    Parameters
+    ----------
+    lambB : callable
+        Lambda function that takes flux values and returns B matrix
+    flux_ids : list
+        List of flux IDs in the order expected by lambB
+    base_flux_values : list
+        Base flux values for numerical differentiation
+
+    Returns
+    -------
+    list
+        List of (row, col, flux_idx, coefficient) tuples
+    """
+    eps = 1e-8
+    base_flux_array = np.array(base_flux_values, dtype=float)
+    base_B = np.array(lambB(*base_flux_array))
+
+    structure = []
+
+    for row in range(base_B.shape[0]):
+        for col in range(base_B.shape[1]):
+            if abs(base_B[row, col]) > 1e-10:
+                is_constant = True
+                for flux_idx in range(len(flux_ids)):
+                    perturbed = base_flux_array.copy()
+                    perturbed[flux_idx] += eps
+                    perturbed_B = np.array(lambB(*perturbed))
+                    if abs(perturbed_B[row, col] - base_B[row, col]) > 1e-10:
+                        is_constant = False
+                        break
+                if is_constant:
+                    structure.append((int(row), int(col), -1, float(base_B[row, col])))
+
+    for flux_idx in range(len(flux_ids)):
+        perturbed = base_flux_array.copy()
+        perturbed[flux_idx] += eps
+        perturbed_B = np.array(lambB(*perturbed))
+        dB = (perturbed_B - base_B) / eps
+
+        for row in range(dB.shape[0]):
+            for col in range(dB.shape[1]):
+                if abs(dB[row, col]) > 1e-10:
+                    structure.append((int(row), int(col), int(flux_idx), float(dB[row, col])))
+
+    return structure
+
+
+def extract_matrix_structure_M(lambM, metab_ids, base_conc_values):
+    """Extract sparse structure of M matrix via numerical differentiation.
+
+    Parameters
+    ----------
+    lambM : callable
+        Lambda function that takes concentration values and returns M matrix
+    metab_ids : list
+        List of metabolite IDs in the order expected by lambM
+    base_conc_values : list
+        Base concentration values for numerical differentiation
+
+    Returns
+    -------
+    list
+        List of (row, conc_idx, coefficient) tuples (diagonal only)
+    """
+    eps = 1e-8
+    base_conc_array = np.array(base_conc_values, dtype=float)
+    base_M = np.array(lambM(*base_conc_array))
+
+    structure = []
+    n_products = base_M.shape[0]
+
+    for row in range(n_products):
+        if abs(base_M[row, row]) > 1e-10:
+            is_constant = True
+            for conc_idx in range(len(metab_ids)):
+                perturbed = base_conc_array.copy()
+                perturbed[conc_idx] += eps
+                perturbed_M = np.array(lambM(*perturbed))
+                if abs(perturbed_M[row, row] - base_M[row, row]) > 1e-10:
+                    is_constant = False
+                    break
+            if is_constant:
+                structure.append((int(row), -1, float(base_M[row, row])))
+
+    for conc_idx in range(len(metab_ids)):
+        perturbed = base_conc_array.copy()
+        perturbed[conc_idx] += eps
+        perturbed_M = np.array(lambM(*perturbed))
+        dM = (perturbed_M - base_M) / eps
+
+        for row in range(n_products):
+            if abs(dM[row, row]) > 1e-10:
+                structure.append((int(row), int(conc_idx), float(dM[row, row])))
+
+    return structure
+
+
+def _get_emu_id_str(emu) -> str:
+    """Extract EMU ID string from EMU object."""
+    if hasattr(emu, "id"):
+        return emu.id
+    return str(emu)
+
+
+def _compute_substrate_mdv_pure(emu, labeling_pattern, purity, percentage):
+    """Compute substrate MDV without natural abundance.
+
+    Same algorithm as freeflux's get_substrate_MDV but uses [1, 0] for
+    unlabeled positions instead of natural abundance [0.9893, 0.0107].
+
+    Parameters
+    ----------
+    emu : EMU object
+        Freeflux EMU with atom_nos attribute (1-indexed)
+    labeling_pattern : str
+        Labeling pattern string (e.g., "10")
+    purity : float
+        Isotopic purity for labeled positions
+    percentage : float
+        Molar fraction of tracer
+    """
+    atom_nos = emu.atom_nos  # 1-indexed
+    n_atoms = len(atom_nos)
+
+    # Build per-atom MDVs and convolve
+    result = np.array([1.0])  # identity for convolution
+    for atom_no in atom_nos:
+        if labeling_pattern[atom_no - 1] == '1':
+            atom_mdv = np.array([1 - purity, purity])
+        else:
+            atom_mdv = np.array([1.0, 0.0])  # pure unlabeled, no natural abundance
+        result = np.convolve(result, atom_mdv)
+
+    # Weight by percentage, add pure unlabeled remainder
+    mdv = percentage * result
+    if percentage < 1.0:
+        unlabeled = np.zeros(n_atoms + 1)
+        unlabeled[0] = 1.0
+        mdv += (1 - percentage) * unlabeled
+
+    return mdv
+
+
+def build_emu_network(
+    reactions_file: Path,
+    target_emus: dict[str, list[str]],
+    labeling_substrate: str,
+    labeling_pattern: list[str],
+    labeling_percentage: list[float],
+    labeling_purity: list[float],
+) -> dict:
+    """Build EMU network structure at runtime for JAX-traceable simulation.
+
+    This replaces the previous serialize-to-JSON approach. The network is built
+    from freeflux's EMU decomposition using numerical differentiation to extract
+    matrix structure, then returned as a dict ready for precompute_matrix_structure().
+
+    Initial states use pure unlabeled MDVs ([1, 0, ...]) instead of natural
+    abundance. Substrate MDVs for non-labeled substrates also use pure unlabeled.
+
+    Parameters
+    ----------
+    reactions_file : Path
+        Path to reactions.tsv file
+    target_emus : dict
+        Target EMUs {metabolite: [atom_patterns]}
+    labeling_substrate : str
+        Substrate for labeling (e.g., "A_ext")
+    labeling_pattern : list
+        Labeling patterns (e.g., ["10"])
+    labeling_percentage : list
+        Percentage of each labeling pattern
+    labeling_purity : list
+        Purity of each labeling pattern
 
     Returns
     -------
     dict
         EMU network structure for pure JAX simulation
     """
-    import json
+    from collections.abc import Iterable
 
-    with open(network_path) as f:
-        return json.load(f)
+    model = Model("emu_builder")
+    model.read_from_file(str(reactions_file))
+
+    with model.simulator("inst") as isim:
+        isim.set_target_EMUs(target_emus)
+        isim.set_timepoints([0.0, 1.0])  # Dummy timepoints for setup
+        isim.set_labeling_strategy(
+            labeling_substrate,
+            labeling_pattern=labeling_pattern,
+            percentage=labeling_percentage,
+            purity=labeling_purity,
+        )
+
+        # Set dummy non-zero fluxes to avoid division errors
+        for flux_id in model.totalfluxids:
+            isim.set_flux(flux_id, 1.0)
+
+        # Set dummy concentrations
+        for metab_id in model.metabolites:
+            isim.set_concentration(metab_id, 1.0)
+
+        isim.prepare(n_jobs=1)
+
+        # Build network structure
+        network = {
+            "sizes": sorted(list(model.matrix_As.keys())),
+            "flux_ids_all": list(model.totalfluxids),
+            "metab_ids_all": list(model.metabolites),
+            "matrix_A_structure": {},
+            "matrix_B_structure": {},
+            "matrix_M_structure": {},
+            "flux_ids_A": {},
+            "flux_ids_B": {},
+            "metab_ids_M": {},
+            "product_emu_ids": {},
+            "source_emu_info": {},
+            "initial_X": {},
+            "initial_Y": {},
+            "substrate_mdvs": {},
+            "matrix_shapes": {},
+        }
+
+        # Collect labeled substrate EMU IDs for later
+        # EMU IDs are like "A_ext_1", "A_ext_12" - strip the atom suffix to get metabolite name
+        labeled_substrate_emu_ids = set()
+        for emu in model.substrate_MDVs:
+            emu_id = _get_emu_id_str(emu)
+            # The metabolite name is everything except the last underscore-separated atom pattern
+            # e.g., "A_ext_1" -> "A_ext", "A_ext_12" -> "A_ext", "P_ext_in_1" -> "P_ext_in"
+            parts = emu_id.rsplit("_", 1)
+            metab_name = parts[0] if len(parts) == 2 else emu_id
+            if metab_name == labeling_substrate:
+                labeled_substrate_emu_ids.add(emu_id)
+
+        # Process each EMU size
+        for size in network["sizes"]:
+            lambA, flux_ids_A, product_emus = model.matrix_As[size]
+            lambB, flux_ids_B, source_emus = model.matrix_Bs[size]
+            lambM, metab_ids = model.matrix_Ms[size]
+
+            network["flux_ids_A"][str(size)] = list(flux_ids_A)
+            network["flux_ids_B"][str(size)] = list(flux_ids_B)
+            network["metab_ids_M"][str(size)] = list(metab_ids)
+
+            base_flux_values_A = [1.0] * len(flux_ids_A)
+            base_flux_values_B = [1.0] * len(flux_ids_B)
+            base_conc_values = [1.0] * len(metab_ids)
+
+            A_structure = extract_matrix_structure_A(lambA, flux_ids_A, base_flux_values_A)
+            B_structure = extract_matrix_structure_B(lambB, flux_ids_B, base_flux_values_B)
+            M_structure = extract_matrix_structure_M(lambM, metab_ids, base_conc_values)
+
+            network["matrix_A_structure"][str(size)] = A_structure
+            network["matrix_B_structure"][str(size)] = B_structure
+            network["matrix_M_structure"][str(size)] = M_structure
+
+            network["product_emu_ids"][str(size)] = [_get_emu_id_str(emu) for emu in product_emus]
+
+            source_info = []
+            for source_emu in source_emus:
+                if isinstance(source_emu, Iterable) and not isinstance(source_emu, str):
+                    source_info.append({
+                        "type": "composite",
+                        "components": [_get_emu_id_str(emu) for emu in source_emu],
+                    })
+                else:
+                    source_info.append({
+                        "type": "single",
+                        "id": _get_emu_id_str(source_emu),
+                    })
+            network["source_emu_info"][str(size)] = source_info
+
+            # Override initial_X: pure unlabeled MDVs [1, 0, ...]
+            freeflux_X = np.array(model.initial_matrix_Xs[size])
+            n_products_in_size, n_mass = freeflux_X.shape
+            pure_X = np.zeros_like(freeflux_X)
+            pure_X[:, 0] = 1.0  # M+0 = 1.0, rest = 0.0
+            network["initial_X"][str(size)] = pure_X.tolist()
+
+            # Override initial_Y: pure unlabeled for all source EMUs at t=0
+            # (labeled substrate MDVs are stored separately in substrate_mdvs
+            # and applied at simulation time, not in initial_Y)
+            freeflux_Y = np.array(model.initial_matrix_Ys[size])
+            pure_Y = np.zeros_like(freeflux_Y)
+            pure_Y[:, 0] = 1.0
+            network["initial_Y"][str(size)] = pure_Y.tolist()
+
+            base_A = np.array(lambA(*base_flux_values_A))
+            base_B = np.array(lambB(*base_flux_values_B))
+            base_M = np.array(lambM(*base_conc_values))
+            network["matrix_shapes"][str(size)] = {
+                "A": list(base_A.shape),
+                "B": list(base_B.shape),
+                "M": list(base_M.shape),
+            }
+
+        # Store substrate MDVs: recompute without natural abundance
+        pat = labeling_pattern[0] if isinstance(labeling_pattern, list) else labeling_pattern
+        pur = labeling_purity[0] if isinstance(labeling_purity, list) else labeling_purity
+        pct = labeling_percentage[0] if isinstance(labeling_percentage, list) else labeling_percentage
+        for emu, mdv in model.substrate_MDVs.items():
+            emu_id = _get_emu_id_str(emu)
+            if emu_id in labeled_substrate_emu_ids:
+                # Recompute MDV without natural abundance
+                pure_mdv = _compute_substrate_mdv_pure(emu, pat, pur, pct)
+                network["substrate_mdvs"][emu_id] = pure_mdv.tolist()
+            else:
+                # Pure unlabeled: [1, 0, ...]
+                mdv_arr = np.array(mdv)
+                pure_mdv = np.zeros_like(mdv_arr)
+                pure_mdv[0] = 1.0
+                network["substrate_mdvs"][emu_id] = pure_mdv.tolist()
+
+    return network
 
 
 def precompute_matrix_structure(network: dict) -> dict:
@@ -1130,7 +1529,7 @@ def simulate_inst_mdvs_pure_jax(
     timepoints : jnp.ndarray
         Simulation timepoints (first must be 0.0)
     network : dict
-        Serialized EMU network structure from load_emu_network_structure()
+        EMU network structure from build_emu_network()
     precomputed : dict, optional
         Precomputed structure arrays from precompute_matrix_structure().
         If None, will be computed (slower, use for one-off calls).
@@ -1234,7 +1633,7 @@ def simulate_ss_mdvs_pure_jax(
     fluxes_array : jnp.ndarray
         Flux values in order matching network["flux_ids_all"]
     network : dict
-        Serialized EMU network structure from load_emu_network_structure()
+        EMU network structure from build_emu_network()
     precomputed : dict, optional
         Precomputed structure arrays from precompute_matrix_structure().
         If None, will be computed.
@@ -1340,14 +1739,14 @@ def run_freeflux_ss_simulation(
                     for emu_id in res.simulated_EMUs}
 
         # Use pure JAX implementation
-        network_path = reactions_file.parent / "emu_network.json"
-        if not network_path.exists():
-            raise FileNotFoundError(
-                f"EMU network not found at {network_path}. "
-                "Run serialize_emu_network() first."
-            )
-
-        network = load_emu_network_structure(network_path)
+        network = build_emu_network(
+            reactions_file=reactions_file,
+            target_emus=target_emus,
+            labeling_substrate=labeling_substrate,
+            labeling_pattern=labeling_pattern,
+            labeling_percentage=labeling_percentage,
+            labeling_purity=labeling_purity,
+        )
         fluxes_array = create_flux_array_from_dict(fluxes, network)
 
         mdvs = simulate_ss_mdvs_pure_jax(fluxes_array, network)

@@ -38,9 +38,10 @@ METABOLITE_COLORS = {
     "f6p":  cm.batlow(0.38),
     "dhap": cm.batlow(0.60),
     "g3p":  cm.batlow(0.80),
+    "r5p":  cm.batlow(0.92),
 }
 
-METABOLITES = ["g6p", "f6p", "dhap", "g3p"]
+METABOLITES = ["g6p", "f6p", "dhap", "g3p", "r5p"]
 
 # ---------------------------------------------------------------------------
 # Apply rcParams

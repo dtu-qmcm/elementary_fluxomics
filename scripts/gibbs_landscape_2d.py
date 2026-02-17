@@ -75,6 +75,7 @@ TARGET_EMUS = {
     "g3p": ["123"],
     "pg3": ["123"],
     "pyr": ["123"],
+    "r5p": ["12345"],
 }
 
 # Log-normal error scale (standard deviation of log-transformed values)

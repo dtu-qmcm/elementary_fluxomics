@@ -11,12 +11,6 @@ import jax.numpy as jnp
 import diffrax
 from diffrax import SteadyStateEvent
 
-try:
-    from scripts.isotopomer_simulation import enzyme_ode
-except ModuleNotFoundError:
-    from isotopomer_simulation import enzyme_ode
-
-
 # ============================================================================
 # Thermodynamic constants
 # ============================================================================
@@ -208,10 +202,10 @@ def ode_system(t, y, args):
 def simulate_enzyme_to_steady_state_jax(params, initial_array):
     """JAX-compatible enzyme ODE simulation to steady state.
 
-    Uses enzyme_ode (total concentrations without isotopomers) to find
+    Uses ode_system (total concentrations without isotopomers) to find
     metabolic steady state.
     """
-    term = diffrax.ODETerm(enzyme_ode)
+    term = diffrax.ODETerm(ode_system)
     solver = diffrax.Kvaerno5()
     stepsize_controller = diffrax.PIDController(rtol=1e-6, atol=1e-8)
 

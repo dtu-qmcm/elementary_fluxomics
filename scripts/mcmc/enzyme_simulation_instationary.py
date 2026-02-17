@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Enzyme kinetics ODE simulation with INSTATIONARY isotopomer labeling analysis.
+"""Enzyme kinetics ODE simulation with INSTATIONARY EMU labeling analysis.
 
 This script performs MCMC parameter estimation using time-course MID data instead
 of steady-state MIDs. The system starts at metabolic steady state but isotopically
@@ -12,8 +12,8 @@ Key differences from enzyme_simulation.py (steady-state):
 - More information content from transient dynamics
 
 Labeling:
-  - A_e (external A): 100% labeled on both atoms (isotopomer A_11)
-  - Q_e, P_e (external Q, P): 100% unlabeled
+  - A_ext: first atom labeled (pattern "10")
+  - Q_ext_in, P_ext_in: 100% unlabeled
 
 Inference approach:
   1. Run enzyme_ode to get metabolic steady-state fluxes and concentrations
@@ -40,7 +40,7 @@ from jax_tqdm import scan_tqdm
 
 try:
     from scripts.emu_jax import (
-        load_emu_network_structure,
+        build_emu_network,
         simulate_inst_mdvs_pure_jax,
         precompute_matrix_structure,
     )
@@ -64,8 +64,9 @@ try:
         params_dict_to_array,
     )
 except ModuleNotFoundError:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from emu_jax import (
-        load_emu_network_structure,
+        build_emu_network,
         simulate_inst_mdvs_pure_jax,
         precompute_matrix_structure,
     )
@@ -91,7 +92,7 @@ except ModuleNotFoundError:
 
 
 SCRIPT_DIR = Path(__file__).parent
-PROJECT_ROOT = SCRIPT_DIR.parent
+PROJECT_ROOT = SCRIPT_DIR.parent.parent
 REACTIONS_FILE = PROJECT_ROOT / "models" / "simple_network" / "reactions.tsv"
 RESULTS_DIR = PROJECT_ROOT / "results" / "enzyme_simulation_instationary"
 
@@ -119,14 +120,21 @@ def get_pure_jax_emu_network():
     -------
     tuple
         (network, precomputed) where:
-        - network: Serialized EMU network structure
+        - network: EMU network structure
         - precomputed: Precomputed matrix structure arrays for JAX tracing
     """
     global _PURE_JAX_EMU_NETWORK
 
     if _PURE_JAX_EMU_NETWORK is None:
-        emu_network_path = PROJECT_ROOT / "models" / "simple_network" / "emu_network.json"
-        network = load_emu_network_structure(emu_network_path)
+        network = build_emu_network(
+            reactions_file=REACTIONS_FILE,
+            target_emus={"A": ["12"], "EA": ["12"], "EPQ": ["12"],
+                         "EP": ["1"], "Q": ["1"], "P": ["1"]},
+            labeling_substrate="A_ext",
+            labeling_pattern=["10"],
+            labeling_percentage=[1.0],
+            labeling_purity=[1.0],
+        )
         precomputed = precompute_matrix_structure(network)
         _PURE_JAX_EMU_NETWORK = (network, precomputed)
 
@@ -143,7 +151,7 @@ def compute_fluxes_array_pure_jax(concs, params, network):
     params : dict
         Rate constants
     network : dict
-        Serialized EMU network structure
+        EMU network structure
 
     Returns
     -------
@@ -190,7 +198,7 @@ def compute_concs_array_pure_jax(concs, network):
     concs : dict
         Concentration values
     network : dict
-        Serialized EMU network structure
+        EMU network structure
 
     Returns
     -------
@@ -237,7 +245,7 @@ def simulate_emu_timecourse(params, concs_dict, observation_times, network, prec
     observation_times : jnp.array
         Time points at which to observe MIDs
     network : dict
-        Serialized EMU network structure
+        EMU network structure
     precomputed : dict
         Precomputed matrix structure arrays for JAX tracing
 
@@ -418,7 +426,7 @@ def compute_condition_likelihood(
     observation_times : jnp.array
         Observation time points
     emu_network : dict
-        Serialized EMU network structure
+        EMU network structure
     precomputed : dict
         Precomputed matrix structure arrays for JAX tracing
 
@@ -562,7 +570,7 @@ def compute_log_posterior_jax(
     prior_std : float
         Prior std (log-scale)
     emu_network : dict
-        Serialized EMU network structure
+        EMU network structure
     precomputed : dict
         Precomputed matrix structure arrays for JAX tracing
 

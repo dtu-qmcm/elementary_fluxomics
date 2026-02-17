@@ -146,22 +146,21 @@ Where R = 8.314e-3 kJ/(mol*K) and T = 298.15 K (default).
 
 ## Enzyme Simulation Module
 
-Scripts for simulating enzyme-catalyzed reactions with isotope labeling using both custom isotopomer ODE and freeflux EMU approaches.
+Scripts for simulating enzyme-catalyzed reactions with isotope labeling using the freeflux EMU algorithm with a pure JAX backend.
 
 ### Files
 
 | File | Description |
 |------|-------------|
 | `models/simple_network/reactions.tsv` | Reaction network with atom mappings for enzyme mechanism |
-| `scripts/enzyme_simulation.py` | Main simulation with steady-state isotope labeling + MCMC |
-| `scripts/enzyme_simulation_instationary.py` | Instationary (time-course) isotope labeling |
+| `scripts/enzyme_utils.py` | Shared constants, ODE, and utilities for ordered mechanism |
+| `scripts/enzyme_utils_random.py` | Shared constants, ODE, and utilities for random mechanism |
+| `scripts/emu_jax.py` | JAX-compatible EMU simulation (builds network at runtime from freeflux) |
+| `scripts/mcmc/enzyme_simulation.py` | Main simulation with steady-state EMU labeling + MCMC |
+| `scripts/mcmc/enzyme_simulation_instationary.py` | Instationary (time-course) EMU labeling |
 | `scripts/enzyme_simulation_no_labeling.py` | Enzyme kinetics without isotope labeling |
-| `scripts/enzyme_simulation_random_instationary.py` | Random mechanism with instationary labeling |
-| `scripts/isotopomer_simulation.py` | Isotopomer ODE definitions (18-state system) |
-| `scripts/isotopomer_simulation_random.py` | Isotopomer ODE for random mechanism (20-state system) |
-| `scripts/emu_jax.py` | JAX-compatible EMU simulation using freeflux |
-| `scripts/psis_loo_comparison.py` | PSIS-LOO model comparison (ordered vs random) |
-| `tests/test_validate_isotopomer_vs_emu.py` | Validation: isotopomer ODE vs freeflux EMU |
+| `scripts/mcmc/enzyme_simulation_random_instationary.py` | Random mechanism with instationary labeling |
+| `scripts/mcmc/psis_loo_comparison.py` | PSIS-LOO model comparison (ordered vs random) |
 | `tests/test_validate_exchange_model.py` | Validation: external pool exchange kinetics |
 
 ### Enzyme Kinetics Model
@@ -181,10 +180,10 @@ With enzyme conservation: `E + EA + EPQ + EP = E_T`
 #### Exchange Reactions
 
 Exchange reactions are modeled as **separate in/out fluxes** for proper isotope tracking:
-- `v1`: A_ext → A (input of labeled A_11)
-- `v1_out`: A → A_sink (output, removes isotopomers proportionally)
-- `vq_in`: Q_ext_in → Q (input of unlabeled Q_0)
-- `vq_out`: Q → Q_ext (output proportional to isotopomers)
+- `v1`: A_ext → A (input of labeled substrate)
+- `v1_out`: A → A_sink (output, removes labeled material proportionally)
+- `vq_in`: Q_ext_in → Q (input of unlabeled Q)
+- `vq_out`: Q → Q_ext (output proportional to labeling)
 - `vp_in/vp_out`: Same pattern for P
 
 This is critical for correct isotope dilution - even with net influx, the efflux removes labeled material.
@@ -195,17 +194,15 @@ This is critical for correct isotope dilution - even with net influx, the efflux
 - `P(a) ↔ Q(a)` (interconversion, 1 atom preserved)
 
 #### Labeling
-- A_ext: 100% labeled on both atoms (pattern "11")
+- A_ext: first atom labeled (pattern "10")
 - Q_ext_in, P_ext_in: 100% unlabeled
+- Initial states: pure unlabeled (`[1, 0, ...]`)
 
-### Isotope Simulation Approaches
+### Isotope Simulation
 
-Two equivalent methods for computing isotope labeling patterns:
-
-1. **Isotopomer ODE** (`isotopomer_simulation.py`): Tracks all 18 isotopomers explicitly as separate ODE states
-2. **EMU Algorithm** (`emu_jax.py`): Uses freeflux's Elementary Metabolite Unit decomposition
-
-Both methods produce equivalent MIDs (validated to within 0.4% difference).
+The **EMU Algorithm** (`emu_jax.py`) uses freeflux's Elementary Metabolite Unit decomposition
+to compute Mass Isotopomer Distributions (MIDs). The EMU network is built at runtime via
+`build_emu_network()` from the reactions file.
 
 ### Wegscheider Thermodynamic Constraints
 
@@ -230,11 +227,10 @@ Default formation energies: A=0.0, P=0.5, Q=-2.5 kJ/mol
 | Function | Description |
 |----------|-------------|
 | `simulate_enzyme_to_steady_state_jax()` | Solve enzyme ODE to metabolic steady state |
-| `simulate_isotopomers_to_steady_state()` | Solve isotopomer ODE to isotopic steady state |
+| `build_emu_network()` | Build EMU network at runtime from reactions file |
 | `compute_fluxes_for_emu()` | Compute forward/backward fluxes for EMU simulation |
-| `run_emu_simulation()` | Run freeflux EMU simulation |
 | `compute_wegscheider_constraints()` | Compute k2f and k_pq_r from thermodynamics |
-| `compute_log_posterior_jax()` | JAX-compatible log-posterior for MCMC |
+| `compute_log_posterior_jax_emu()` | JAX-compatible log-posterior for MCMC |
 | `run_mcmc()` | MCMC sampling using blackjax NUTS |
 
 ### MCMC Parameter Estimation
@@ -269,10 +265,9 @@ results = run_mcmc(
 
 ### Validation
 
-Run the validation scripts to verify implementations:
+Run the validation tests:
 ```bash
-uv run python tests/test_validate_isotopomer_vs_emu.py  # Isotopomer ODE vs freeflux EMU
-uv run python tests/test_validate_exchange_model.py      # Exchange kinetics validation
+uv run pytest tests/test_validate_exchange_model.py      # Exchange kinetics validation
+uv run pytest tests/test_emu_jax_mcmc.py                 # EMU simulation and MCMC
+uv run pytest tests/test_emu_ss_jax.py                   # Steady-state EMU
 ```
-
-Expected output: Maximum absolute difference < 1% (typically ~0.4%)

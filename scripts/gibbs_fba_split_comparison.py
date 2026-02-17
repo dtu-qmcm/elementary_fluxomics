@@ -50,6 +50,7 @@ TARGET_EMUS = {
     "f6p": ["123456"],
     "dhap": ["123"],
     "g3p": ["123"],
+    "r5p": ["12345"],
 }
 
 # EMU ID to metabolite name mapping
@@ -58,6 +59,7 @@ EMU_TO_METABOLITE = {
     "f6p_123456": "f6p",
     "dhap_123": "dhap",
     "g3p_123": "g3p",
+    "r5p_12345": "r5p",
 }
 
 # Log-normal error scale (standard deviation of log-transformed values)
@@ -419,8 +421,8 @@ def run_fba_split_scan(fractions):
             sys.stdout.flush()
             nll_timecourse = np.nan
             nll_ss = np.nan
-            max_diff_tc = {m: np.nan for m in ["g6p", "f6p", "dhap", "g3p"]}
-            max_diff_ss = {m: np.nan for m in ["g6p", "f6p", "dhap", "g3p"]}
+            max_diff_tc = {m: np.nan for m in ["g6p", "f6p", "dhap", "g3p", "r5p"]}
+            max_diff_ss = {m: np.nan for m in ["g6p", "f6p", "dhap", "g3p", "r5p"]}
 
         # Aggregated results
         aggregated_results.append({
@@ -439,7 +441,7 @@ def run_fba_split_scan(fractions):
         }
         max_overall_tc = 0.0
         max_overall_ss = 0.0
-        for met in ["g6p", "f6p", "dhap", "g3p"]:
+        for met in ["g6p", "f6p", "dhap", "g3p", "r5p"]:
             isotope_row[f"max_diff_tc_{met}"] = max_diff_tc.get(met, np.nan)
             isotope_row[f"max_diff_ss_{met}"] = max_diff_ss.get(met, np.nan)
             if not np.isnan(max_diff_tc.get(met, np.nan)):
@@ -521,7 +523,7 @@ def plot_max_isotope_diff(df, output_path):
     """Plot maximum isotope difference vs fraction per metabolite."""
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    metabolites = ["g6p", "f6p", "dhap", "g3p"]
+    metabolites = ["g6p", "f6p", "dhap", "g3p", "r5p"]
     colors = [cmc.batlow(i / len(metabolites)) for i in range(len(metabolites))]
 
     for met, color in zip(metabolites, colors):
@@ -553,8 +555,8 @@ def plot_max_isotope_diff(df, output_path):
 
 def plot_timecourse_per_metabolite(df_timecourse, output_path):
     """Plot per-metabolite NLL timecourse in subplots."""
-    metabolites = ["g6p", "f6p", "dhap", "g3p"]
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    metabolites = ["g6p", "f6p", "dhap", "g3p", "r5p"]
+    fig, axes = plt.subplots(3, 2, figsize=(14, 15))
     axes = axes.flatten()
 
     fractions = sorted(df_timecourse["fraction"].unique())
@@ -582,6 +584,10 @@ def plot_timecourse_per_metabolite(df_timecourse, output_path):
         ax.set_ylabel("Negative Log-Likelihood", fontsize=10)
         ax.set_title(f"{met_id.upper()}", fontsize=12)
         ax.grid(True, alpha=0.3)
+
+    # Hide unused subplots
+    for ax in axes[len(metabolites):]:
+        ax.set_visible(False)
 
     # Add legend to last subplot
     handles, labels = axes[0].get_legend_handles_labels()
@@ -671,7 +677,7 @@ def main():
 
     # Find max isotope diff summary
     print(f"\nMaximum Isotope Differences (timecourse):")
-    for met in ["g6p", "f6p", "dhap", "g3p"]:
+    for met in ["g6p", "f6p", "dhap", "g3p", "r5p"]:
         col = f"max_diff_tc_{met}"
         max_val = df_isotope[col].max()
         max_idx = df_isotope[col].idxmax()

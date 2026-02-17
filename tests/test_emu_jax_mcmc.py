@@ -21,13 +21,14 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 
 from scripts.emu_jax import (
-    load_emu_network_structure,
+    build_emu_network,
     simulate_inst_mdvs_pure_jax,
+    precompute_matrix_structure,
     create_flux_array_from_dict,
     create_conc_array_from_dict,
     run_freeflux_inst_simulation,
 )
-from scripts.enzyme_simulation import (
+from scripts.mcmc.enzyme_simulation import (
     DEFAULT_PARAMS,
     DEFAULT_INITIAL,
     get_pure_jax_emu_network,
@@ -50,9 +51,17 @@ class TestPureJaxEmuSimulation:
 
     @pytest.fixture
     def emu_network(self):
-        """Load the serialized EMU network."""
-        network_path = PROJECT_ROOT / "models" / "simple_network" / "emu_network.json"
-        return load_emu_network_structure(network_path)
+        """Build the EMU network at runtime."""
+        reactions_file = PROJECT_ROOT / "models" / "simple_network" / "reactions.tsv"
+        return build_emu_network(
+            reactions_file=reactions_file,
+            target_emus={"A": ["12"], "EA": ["12"], "EPQ": ["12"],
+                         "EP": ["1"], "Q": ["1"], "P": ["1"]},
+            labeling_substrate="A_ext",
+            labeling_pattern=["10"],
+            labeling_percentage=[1.0],
+            labeling_purity=[1.0],
+        )
 
     @pytest.fixture
     def test_fluxes(self):
@@ -105,18 +114,19 @@ class TestPureJaxEmuSimulation:
         # Only pass free metabolites to freeflux
         freeflux_concs = {k: v for k, v in test_concs.items() if k in ["A", "Q", "P"]}
 
-        # Run freeflux JAX backend
+        # Run freeflux JAX backend with pure unlabeled to match build_emu_network
         mdvs_freeflux = run_freeflux_inst_simulation(
             reactions_file=reactions_file,
             target_emus=target_emus,
             timepoints=timepoints,
             labeling_substrate="A_ext",
-            labeling_pattern=["11"],
+            labeling_pattern=["10"],
             labeling_percentage=[1.0],
             labeling_purity=[1.0],
             fluxes=test_fluxes,
             concentrations=freeflux_concs,
             use_jax=True,
+            pure_unlabeled=True,
         )
 
         # Run pure JAX simulation

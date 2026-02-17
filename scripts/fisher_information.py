@@ -40,7 +40,7 @@ try:
         params_dict_to_array,
     )
     from scripts.emu_jax import (
-        load_emu_network_structure,
+        build_emu_network,
         precompute_matrix_structure,
         simulate_ss_mdvs_pure_jax,
         simulate_inst_mdvs_pure_jax,
@@ -59,7 +59,7 @@ except ModuleNotFoundError:
         params_dict_to_array,
     )
     from emu_jax import (
-        load_emu_network_structure,
+        build_emu_network,
         precompute_matrix_structure,
         simulate_ss_mdvs_pure_jax,
         simulate_inst_mdvs_pure_jax,
@@ -94,9 +94,17 @@ FORMATION_ENERGIES_ARRAY = jnp.array([
 # =========================================================================
 
 def get_emu_network():
-    """Load EMU network structure and precompute matrix arrays."""
-    network_path = PROJECT_ROOT / "models" / "simple_network" / "emu_network.json"
-    network = load_emu_network_structure(network_path)
+    """Build EMU network structure and precompute matrix arrays."""
+    reactions_file = PROJECT_ROOT / "models" / "simple_network" / "reactions.tsv"
+    network = build_emu_network(
+        reactions_file=reactions_file,
+        target_emus={"A": ["12"], "EA": ["12"], "EPQ": ["12"],
+                     "EP": ["1"], "Q": ["1"], "P": ["1"]},
+        labeling_substrate="A_ext",
+        labeling_pattern=["10"],
+        labeling_percentage=[1.0],
+        labeling_purity=[1.0],
+    )
     precomputed = precompute_matrix_structure(network)
     return network, precomputed
 

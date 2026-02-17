@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Enzyme kinetics ODE simulation with INSTATIONARY isotopomer labeling analysis.
+"""Enzyme kinetics ODE simulation with INSTATIONARY EMU labeling analysis.
 
 Random Uni-Bi Enzyme Mechanism Implementation
 
@@ -25,8 +25,8 @@ MCMC Parameters:
 - Fixed per condition: A_e, E_T
 
 Labeling:
-  - A_e (external A): 100% labeled on both atoms (isotopomer A_11)
-  - Q_e, P_e (external Q, P): 100% unlabeled
+  - A_ext: first atom labeled (pattern "10")
+  - Q_ext_in, P_ext_in: 100% unlabeled
 """
 
 from pathlib import Path
@@ -44,33 +44,24 @@ import blackjax
 from jax_tqdm import scan_tqdm
 
 try:
-    from scripts.isotopomer_simulation_random import enzyme_ode_random
-    from scripts.isotopomer_network_random import (
-        STATE_NAMES_RANDOM,
-        STATE_INDEX_RANDOM,
-        N_ISOTOPOMERS_RANDOM,
-    )
+    from scripts.enzyme_utils_random import enzyme_ode_random
     from scripts.emu_jax import (
-        load_emu_network_structure,
+        build_emu_network,
         simulate_inst_mdvs_pure_jax,
         precompute_matrix_structure,
     )
     # Import ordered model functions for generating reference data
-    from scripts.enzyme_simulation_instationary import (
+    from scripts.mcmc.enzyme_simulation_instationary import (
         generate_reference_data_multi_condition as generate_reference_data_ordered,
         DEFAULT_PARAMS as ORDERED_DEFAULT_PARAMS,
         DEFAULT_INITIAL as ORDERED_DEFAULT_INITIAL,
         compute_wegscheider_constraints as compute_wegscheider_ordered,
     )
 except ModuleNotFoundError:
-    from isotopomer_simulation_random import enzyme_ode_random
-    from isotopomer_network_random import (
-        STATE_NAMES_RANDOM,
-        STATE_INDEX_RANDOM,
-        N_ISOTOPOMERS_RANDOM,
-    )
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from enzyme_utils_random import enzyme_ode_random
     from emu_jax import (
-        load_emu_network_structure,
+        build_emu_network,
         simulate_inst_mdvs_pure_jax,
         precompute_matrix_structure,
     )
@@ -84,9 +75,8 @@ except ModuleNotFoundError:
 
 
 SCRIPT_DIR = Path(__file__).parent
-PROJECT_ROOT = SCRIPT_DIR.parent
+PROJECT_ROOT = SCRIPT_DIR.parent.parent
 REACTIONS_FILE = PROJECT_ROOT / "models" / "simple_network_random" / "reactions.tsv"
-EMU_NETWORK_FILE = PROJECT_ROOT / "models" / "simple_network_random" / "emu_network.json"
 RESULTS_DIR = PROJECT_ROOT / "results" / "enzyme_simulation_random_instationary"
 
 # Global cache for EMU network (loaded once, reused)
@@ -372,18 +362,26 @@ def simulate_enzyme_to_steady_state_random_jax(params, initial_array):
 
 
 def get_pure_jax_emu_network_random():
-    """Get or load the pure JAX EMU network for the random mechanism.
+    """Get or build the pure JAX EMU network for the random mechanism.
 
     Returns
     -------
     tuple
-        - network: Serialized EMU network structure dict
+        - network: EMU network structure dict
         - precomputed: Precomputed matrix structure arrays for JAX tracing
     """
     global _PURE_JAX_EMU_NETWORK_RANDOM
 
     if _PURE_JAX_EMU_NETWORK_RANDOM is None:
-        network = load_emu_network_structure(EMU_NETWORK_FILE)
+        network = build_emu_network(
+            reactions_file=REACTIONS_FILE,
+            target_emus={"A": ["12"], "EA": ["12"], "EPQ": ["12"],
+                         "EP": ["1"], "EQ": ["1"], "Q": ["1"], "P": ["1"]},
+            labeling_substrate="A_ext",
+            labeling_pattern=["10"],
+            labeling_percentage=[1.0],
+            labeling_purity=[1.0],
+        )
         precomputed = precompute_matrix_structure(network)
         _PURE_JAX_EMU_NETWORK_RANDOM = (network, precomputed)
 
@@ -400,7 +398,7 @@ def compute_fluxes_array_pure_jax_random(concs, params, network):
     params : dict
         Rate constants
     network : dict
-        Serialized EMU network structure
+        EMU network structure
 
     Returns
     -------
@@ -457,7 +455,7 @@ def compute_concs_array_pure_jax_random(concs, network):
     concs : dict
         Concentration values
     network : dict
-        Serialized EMU network structure
+        EMU network structure
 
     Returns
     -------
@@ -504,7 +502,7 @@ def simulate_emu_timecourse_random(params, concs_dict, observation_times, networ
     observation_times : jnp.array
         Time points at which to observe MIDs
     network : dict
-        Serialized EMU network structure
+        EMU network structure
     precomputed : dict
         Precomputed matrix structure arrays for JAX tracing
 
@@ -743,7 +741,7 @@ def compute_condition_likelihood_random(
 
     sim_concs = jnp.array([A, Q, P])
 
-    # Build concentration dict for isotopomer simulation
+    # Build concentration dict for EMU simulation
     concs_dict = {"A": A, "Q": Q, "P": P, "EA": EA, "EPQ": EPQ, "EP": EP, "EQ": EQ, "E": E}
 
     # Net flux from enzyme_ode steady state
@@ -1165,7 +1163,7 @@ def main():
 
     # Import single-condition function for preview
     try:
-        from scripts.enzyme_simulation_instationary import generate_reference_data_single_condition
+        from scripts.mcmc.enzyme_simulation_instationary import generate_reference_data_single_condition
     except ModuleNotFoundError:
         from enzyme_simulation_instationary import generate_reference_data_single_condition
 

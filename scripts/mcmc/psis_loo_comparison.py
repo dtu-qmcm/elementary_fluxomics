@@ -34,7 +34,7 @@ from jax_tqdm import scan_tqdm
 
 # Import from ordered model script
 try:
-    from scripts.enzyme_simulation_instationary import (
+    from scripts.mcmc.enzyme_simulation_instationary import (
         generate_reference_data_multi_condition,
         EXPERIMENTAL_CONDITIONS,
         OBSERVATION_TIMES,
@@ -53,7 +53,7 @@ try:
         R_GAS,
         compute_wegscheider_constraints_jax,
     )
-    from scripts.enzyme_simulation_random_instationary import (
+    from scripts.mcmc.enzyme_simulation_random_instationary import (
         MCMC_PARAM_NAMES_RANDOM,
         get_pure_jax_emu_network_random,
         compute_fluxes_array_pure_jax_random,
@@ -67,6 +67,8 @@ try:
     )
     from scripts.emu_jax import simulate_inst_mdvs_pure_jax
 except ModuleNotFoundError:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
     from enzyme_simulation_instationary import (
         generate_reference_data_multi_condition,
         EXPERIMENTAL_CONDITIONS,
@@ -107,7 +109,7 @@ import matplotlib.pyplot as plt
 
 
 SCRIPT_DIR = Path(__file__).parent
-PROJECT_ROOT = SCRIPT_DIR.parent
+PROJECT_ROOT = SCRIPT_DIR.parent.parent
 RESULTS_DIR = PROJECT_ROOT / "results" / "psis_loo_comparison"
 
 # Likelihood standard deviations (must match MCMC scripts)
