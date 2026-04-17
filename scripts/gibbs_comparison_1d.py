@@ -404,7 +404,7 @@ def plot_comparison(df, output_path, ref_nll=None):
         )
 
     ax.set_xlabel("Non-mechanistic FBA dG (kJ/mol)", fontsize=12)
-    ax.set_ylabel("Negative Log-Likelihood (Timecourse)", fontsize=12)
+    ax.set_ylabel("NLL (Timecourse)", fontsize=12)
 
     ax.legend(loc="best")
     ax.grid(True, alpha=0.3)
@@ -455,7 +455,7 @@ def plot_final_timepoint(df, output_path, ref_nll=None):
         )
 
     ax.set_xlabel("Non-mechanistic FBA dG (kJ/mol)", fontsize=12)
-    ax.set_ylabel("Negative Log-Likelihood (Steady-State)", fontsize=12)
+    ax.set_ylabel("NLL (Steady-State)", fontsize=12)
 
     ax.legend(loc="best")
     ax.grid(True, alpha=0.3)
@@ -489,7 +489,7 @@ def plot_timecourse_aggregated(df_timecourse, output_path):
 
     ax.set_xscale("log")
     ax.set_xlabel("Time (s)", fontsize=12)
-    ax.set_ylabel("Negative Log-Likelihood (Total)", fontsize=12)
+    ax.set_ylabel("NLL (Total)", fontsize=12)
     ax.set_title("NLL Over Time: Non-mechanistic vs Mechanistic Reference", fontsize=14)
     ax.legend(loc="best", fontsize=8, ncol=2)
     ax.grid(True, alpha=0.3)
@@ -529,7 +529,7 @@ def plot_timecourse_per_metabolite(df_timecourse, output_path):
 
         ax.set_xscale("log")
         ax.set_xlabel("Time (s)", fontsize=10)
-        ax.set_ylabel("Negative Log-Likelihood", fontsize=10)
+        ax.set_ylabel("NLL", fontsize=10)
         ax.set_title(f"{met_id.upper()}", fontsize=12)
         ax.grid(True, alpha=0.3)
 
@@ -537,7 +537,7 @@ def plot_timecourse_per_metabolite(df_timecourse, output_path):
     handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(handles, labels, loc="center right", fontsize=8, bbox_to_anchor=(1.02, 0.5))
 
-    plt.suptitle("Per-Metabolite Negative Log-Likelihood Over Time", fontsize=14, y=1.02)
+    plt.suptitle("Per-Metabolite NLL Over Time", fontsize=14, y=1.02)
     plt.tight_layout()
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     print(f"  Saved: {output_path}")
