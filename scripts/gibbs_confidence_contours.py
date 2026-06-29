@@ -524,7 +524,7 @@ def plot_contours(df, eqs, modes, suffix=""):
     fig.suptitle("Likelihood-ratio confidence contours (FBA1 vs FBA2 ΔG)", y=1.01)
     fig.tight_layout()
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    for ext in ("png", "pdf"):
+    for ext in ("png", "pdf", "svg"):
         out = RESULTS_DIR / f"confidence_contours{suffix}.{ext}"
         fig.savefig(out)
         print(f"Saved {out}", flush=True)
@@ -609,7 +609,7 @@ def plot_overlay(df, suffix=""):
 
     fig.tight_layout()
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    for ext in ("png", "pdf"):
+    for ext in ("png", "pdf", "svg"):
         out = RESULTS_DIR / f"confidence_contours_overlay{suffix}.{ext}"
         fig.savefig(out)
         print(f"Saved {out}", flush=True)
