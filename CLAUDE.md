@@ -2,6 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Notes
+Don't co-author with Claude
+
 ## Project Overview
 
 This repository contains ¹³C metabolic flux analysis (¹³C-MFA) simulations using the Elementary Metabolite Unit (EMU) algorithm. It models isotope labeling patterns in metabolic networks to estimate intracellular flux distributions.
