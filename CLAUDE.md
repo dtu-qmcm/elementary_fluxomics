@@ -93,6 +93,7 @@ Scripts for analyzing how Gibbs energy parameters affect isotope labeling patter
 | Script | Description | Results Directory |
 |--------|-------------|-------------------|
 | `gibbs_landscape_2d.py` | 2D scan of FBA1 vs FBA2 Gibbs energies (30x30 grid) | `results/gibbs_landscape_2d/` |
+| `gibbs_confidence_contours.py` | Likelihood-ratio confidence contours via rotating-ray + optimistix root-finding (parallelized) | `results/gibbs_confidence_contours/` |
 | `gibbs_timecourse_chisquared.py` | Chi-squared evolution over time for different FBA1/FBA2 combinations | `results/gibbs_timecourse/` |
 | `gibbs_comparison_1d.py` | Compare mechanistic vs non-mechanistic models (batlow colors, separate final plot) | `results/gibbs_comparison_1d/` |
 | `gibbs_comparison_fba1_fixed.py` | 1D scan: FBA1 fixed at -3.0, FBA2 varies -5 to -1 (with timecourse) | `results/gibbs_comparison_fba1_fixed/` |
@@ -119,9 +120,31 @@ Scripts for analyzing how Gibbs energy parameters affect isotope labeling patter
 - `timecourse_aggregated.png` - Total chi-squared vs time for each FBA1 value
 - `timecourse_per_metabolite.png` - Per-metabolite chi-squared subplots
 
+**gibbs_confidence_contours/** (likelihood-ratio confidence regions):
+- `confidence_contours.csv` - Per (equilibrium, sim_mode, angle, alpha) crossing distance `d` and the FBA1/FBA2 ΔG coordinates where the LR statistic crosses the chi-squared threshold (plus `converged`/`unbounded` flags)
+- `confidence_contours.png/pdf` - Per-case grid of contours (one panel per equilibrium × sim_mode)
+- `confidence_contours_overlay.png/pdf` - Single square near-equilibrium panel overlaying INST (blue) and SS (salmon) regions; confidence intervals encoded by saturation, reference point as a black cross
+
+### Confidence Contours (`gibbs_confidence_contours.py`)
+
+Instead of a brute-force grid (`gibbs_landscape_2d.py`, which it does **not** replace), this traces the likelihood-ratio confidence boundary directly. From the known true point it casts rays at `N_ANGLES` angles and, per significance level `alpha`, solves for the distance `d` where the LR statistic crosses `chi2.ppf(1 - alpha, df=2)` using `optimistix.Bisection` (the freeflux objective is wrapped in `jax.pure_callback`).
+
+- **Cases**: {INST, SS} × {FFE, NE}. Alphas `[0.9, 0.75, 0.5]` → 10%/25%/50% confidence regions.
+- **Parallelism**: per-(mode, angle) rays fan out across worker processes via a spawn-context `ProcessPoolExecutor` (one pool per equilibrium; an initializer seeds each worker's reference MDVs). The inner alpha loop stays sequential (shrinking bracket). `--workers 1` runs serially with identical results.
+- **Solver tolerances** (module constants): `BISECTION_RTOL`, `BISECTION_ATOL` (on `d`), `MAX_SOLVER_STEPS`. `ATOL` is the binding tolerance for these objectives, so it (not `RTOL`) controls how tightly `d` is localized.
+
+CLI flags:
+```bash
+uv run python scripts/gibbs_confidence_contours.py                          # full 4-case run (default --workers 12)
+uv run python scripts/gibbs_confidence_contours.py --eq ne --angles 200 --workers 20  # near-equilibrium only, 200 points
+uv run python scripts/gibbs_confidence_contours.py --plot-only              # regenerate plots from the saved CSV
+uv run python scripts/gibbs_confidence_contours.py --smoke                  # fast sanity run
+```
+
 ### Running Scripts
 ```bash
 uv run python scripts/gibbs_landscape_2d.py        # ~15-20 min (900 simulations)
+uv run python scripts/gibbs_confidence_contours.py # parallelized; ~2 hrs for --angles 200 --eq ne
 uv run python scripts/gibbs_timecourse_chisquared.py
 uv run python scripts/gibbs_comparison_1d.py
 uv run python scripts/gibbs_comparison_fba1_fixed.py

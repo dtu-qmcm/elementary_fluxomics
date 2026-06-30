@@ -36,7 +36,10 @@ Usage:
 """
 
 import argparse
+import multiprocessing as mp
+import os
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import jax
 
@@ -44,6 +47,7 @@ jax.config.update("jax_enable_x64", True)  # float64 for robust root-finding
 
 import cmcrameri.cm as cmc
 import jax.numpy as jnp
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 import optimistix as optx
@@ -59,7 +63,7 @@ from gibbs_landscape_2d import (
     TIMEPOINTS,
     run_simulation,
 )
-from style import DOUBLE_COL, apply_style
+from style import DOUBLE_COL, SINGLE_COL, apply_style
 
 # ============================================================================
 # Configuration
@@ -78,17 +82,24 @@ N_ANGLES = 10
 # flux direction and destabilizes freeflux, so keep DG_HI small.
 DG_LO, DG_HI = -15.0, 2.0
 
-# Bisection tolerances on the distance d. rtol=1e-2 is loose enough that even
-# very steep crossings (NE INST, where LR explodes over ~0.005 kJ/mol) satisfy
-# optimistix's residual test and converge in ~17 steps; tighter rtol makes the
-# steep cases run to max_steps without ever flagging convergence (the value is
-# still correct to ~1%, which is plenty for a contour).
-BISECTION_RTOL = 1e-2
+# Bisection tolerances on the distance d. A tight rtol (1e-6) pins each crossing
+# to high precision; steep crossings (NE INST, where LR explodes over ~0.005
+# kJ/mol) may need many iterations to satisfy the residual test, so MAX_SOLVER_STEPS
+# below is set high to give them room.
+BISECTION_RTOL = 1e-6
 BISECTION_ATOL = 1e-3
+
+# Max bisection iterations per crossing. With the tight rtol above, steep
+# crossings can take many steps; a large cap lets the residual test actually trip
+# instead of exhausting the budget and reporting non-convergence.
+MAX_SOLVER_STEPS = 1000
 
 # Bracket search: initial probe distance and max doublings.
 D_START = 0.5
 MAX_BRACKET_DOUBLINGS = 40
+
+# Parallel worker processes for the per-angle ray solves.
+N_WORKERS = 12
 
 EQUILIBRIUM_CASES = {
     "ffe": {
@@ -163,6 +174,19 @@ def chisq_ss(ref_ss, test_ss, scale):
 # ============================================================================
 
 _STATE = {}  # {"thermo_file", "ref_tc", "ref_ss", "cache"}
+
+
+def _init_worker(thermo_file, ref_tc, ref_ss):
+    """Seed a pool worker's module-level _STATE (runs once per spawned worker).
+
+    The reference MDVs are computed once in the parent and shipped here via
+    initargs (picklable nested dicts of numpy arrays). x64 is already re-enabled
+    by the module-level jax.config.update that runs on re-import under spawn.
+    """
+    _STATE["thermo_file"] = thermo_file
+    _STATE["ref_tc"] = ref_tc
+    _STATE["ref_ss"] = ref_ss
+    _STATE["cache"] = {}
 
 
 def lr_statistic(fba1, fba2):
@@ -274,7 +298,7 @@ def solve_crossing(objective, threshold, d_upper):
             y0=jnp.asarray(0.5 * d_upper, dtype=jnp.float64),
             args=jnp.asarray(float(threshold), dtype=jnp.float64),
             options={"lower": 0.0, "upper": float(d_upper)},
-            max_steps=60,
+            max_steps=MAX_SOLVER_STEPS,
             throw=False,
         )
     except Exception as e:  # e.g. no sign change in bracket
@@ -315,17 +339,18 @@ def _row(eq, mode, ai, theta, alpha, true1, true2, d, ok, unbounded):
     }
 
 
-def solve_case(eq, mode, true1, true2, angles, alphas):
-    """Trace confidence crossings for one (equilibrium, sim_mode) case."""
-    print(f"\n=== Solving {eq}_{mode} ===", flush=True)
-    # Solve the largest threshold first, then reuse a shrinking bracket. The
-    # largest threshold is the smallest alpha (= largest confidence region).
-    alphas_by_threshold_desc = sorted(alphas, key=lambda a: THRESHOLDS[a], reverse=True)
-    largest = alphas_by_threshold_desc[0]
-    rows = []
+def solve_angle(eq, mode, ai, theta, true1, true2, alphas_by_threshold_desc):
+    """Trace one ray (one angle) for a (equilibrium, sim_mode) case.
 
-    for ai, theta in enumerate(angles):
-        deg = np.degrees(theta)
+    This is the embarrassingly-parallel unit: bracket the largest threshold,
+    then walk the *sequential* alpha loop (each crossing shrinks the bracket for
+    the next, smaller threshold). Returns a fresh list of row dicts. Module-level
+    (and reading only globals + its args) so it is picklable as a pool task; runs
+    in a worker whose _STATE was seeded by _init_worker.
+    """
+    deg = np.degrees(theta)
+    largest = alphas_by_threshold_desc[0]
+    try:
         d_cap = ray_d_cap(theta, true1, true2)
         d_up, bounded = find_upper_bracket(
             theta, true1, true2, mode, THRESHOLDS[largest], d_cap
@@ -333,17 +358,19 @@ def solve_case(eq, mode, true1, true2, angles, alphas):
 
         if not bounded:
             print(
-                f"  angle {ai} ({deg:5.1f} deg): UNBOUNDED "
+                f"  [{mode}] angle {ai} ({deg:5.1f} deg): UNBOUNDED "
                 f"(max LR < {THRESHOLDS[largest]:.2f} within d_cap={d_cap:.2f})",
                 flush=True,
             )
-            for alpha in alphas_by_threshold_desc:
-                rows.append(_row(eq, mode, ai, theta, alpha, true1, true2, np.nan, False, True))
-            continue
+            return [
+                _row(eq, mode, ai, theta, alpha, true1, true2, np.nan, False, True)
+                for alpha in alphas_by_threshold_desc
+            ]
 
         objective = make_objective(theta, true1, true2, mode)
         d_prev = d_up
         hits = {}
+        rows = []
         for alpha in alphas_by_threshold_desc:
             d_hit, accepted, converged = solve_crossing(objective, THRESHOLDS[alpha], d_prev)
             d_rec = d_hit if (accepted and np.isfinite(d_hit)) else np.nan
@@ -356,35 +383,88 @@ def solve_case(eq, mode, true1, true2, angles, alphas):
             else f"conf{round((1 - a) * 100)}%=FAIL"
             for a in alphas_by_threshold_desc
         )
-        print(f"  angle {ai} ({deg:5.1f} deg): d_cap={d_cap:5.2f} | {summary}", flush=True)
+        print(f"  [{mode}] angle {ai} ({deg:5.1f} deg): d_cap={d_cap:5.2f} | {summary}", flush=True)
+        return rows
+    except Exception as e:  # one bad ray must not abort the whole equilibrium
+        print(
+            f"  [{mode}] angle {ai} ({deg:5.1f} deg): FAILED "
+            f"({type(e).__name__}: {e})",
+            flush=True,
+        )
+        return [
+            _row(eq, mode, ai, theta, alpha, true1, true2, np.nan, False, False)
+            for alpha in alphas_by_threshold_desc
+        ]
 
-    return rows
 
+def run_equilibrium(eq, angles, modes, alphas, n_workers):
+    """Build the reference for one equilibrium, then solve every (mode, angle).
 
-def run_equilibrium(eq, angles, modes, alphas):
-    """Build the reference + cache for one equilibrium mode, solve all sim modes."""
+    The per-angle rays are independent and fan out across `n_workers` spawned
+    processes; the alpha loop inside each ray stays sequential. n_workers <= 1
+    runs serially (identical results, ordered prints).
+    """
     cfg = EQUILIBRIUM_CASES[eq]
     true1, true2 = cfg["true1"], cfg["true2"]
-    _STATE["thermo_file"] = cfg["thermo_file"]
-    _STATE["cache"] = {}
+    thermo_file = cfg["thermo_file"]
 
     print(f"\n########## {cfg['label']} ({eq}) ##########", flush=True)
     print(f"True point: FBA1={true1}, FBA2={true2}", flush=True)
-    ref_tc, ref_ss = run_simulation({"FBA1": true1, "FBA2": true2}, TIMEPOINTS, cfg["thermo_file"])
-    _STATE["ref_tc"], _STATE["ref_ss"] = ref_tc, ref_ss
+
+    # Reference + parent _STATE (for the sanity check below and the serial path).
+    ref_tc, ref_ss = run_simulation({"FBA1": true1, "FBA2": true2}, TIMEPOINTS, thermo_file)
+    _STATE["thermo_file"], _STATE["ref_tc"], _STATE["ref_ss"] = thermo_file, ref_tc, ref_ss
+    _STATE["cache"] = {}
 
     tc0, ss0 = lr_statistic(true1, true2)  # sanity: should be ~0
     print(f"True-point LR: timecourse={tc0:.3e}, ss={ss0:.3e}", flush=True)
 
+    # Largest threshold first, then a shrinking bracket per ray (smallest alpha
+    # = largest confidence region = largest threshold).
+    alphas_desc = sorted(alphas, key=lambda a: THRESHOLDS[a], reverse=True)
+    tasks = [(mode, ai, theta) for mode in modes for ai, theta in enumerate(angles)]
+
+    if n_workers <= 1:
+        print(f"\n=== Solving {eq}: {len(tasks)} rays (serial) ===", flush=True)
+        rows = []
+        for mode, ai, theta in tasks:
+            rows += solve_angle(eq, mode, ai, theta, true1, true2, alphas_desc)
+        return rows
+
+    workers = min(n_workers, len(tasks))
+    print(f"\n=== Solving {eq}: {len(tasks)} rays across {workers} workers ===", flush=True)
+    ctx = mp.get_context("spawn")
     rows = []
-    for mode in modes:
-        rows += solve_case(eq, mode, true1, true2, angles, alphas)
+    with ProcessPoolExecutor(
+        max_workers=workers,
+        mp_context=ctx,
+        initializer=_init_worker,
+        initargs=(thermo_file, ref_tc, ref_ss),
+    ) as ex:
+        futures = [
+            ex.submit(solve_angle, eq, mode, ai, theta, true1, true2, alphas_desc)
+            for mode, ai, theta in tasks
+        ]
+        for fut in as_completed(futures):
+            rows += fut.result()
     return rows
 
 
 # ============================================================================
 # Plotting
 # ============================================================================
+
+# Colour encodes the experiment; confidence intervals share the hue and differ
+# only by saturation (more saturated = smaller/higher-confidence region).
+EXPERIMENT_COLORS = {"inst": "#1f6fb2", "ss": "salmon"}  # blue / salmon
+ALPHA_SAT = {0.9: 1.0, 0.75: 0.6, 0.5: 0.32}  # alpha 0.9 = 10% region = innermost
+
+
+def _desaturate(color, scale):
+    """Scale a colour's HSV saturation by `scale` (keeps hue and value)."""
+    h, s, v = mcolors.rgb_to_hsv(mcolors.to_rgb(color))
+    return mcolors.hsv_to_rgb((h, s * scale, v))
+
 
 def plot_contours(df, eqs, modes, suffix=""):
     apply_style()
@@ -444,7 +524,7 @@ def plot_contours(df, eqs, modes, suffix=""):
     fig.suptitle("Likelihood-ratio confidence contours (FBA1 vs FBA2 ΔG)", y=1.01)
     fig.tight_layout()
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    for ext in ("png", "pdf"):
+    for ext in ("png", "pdf", "svg"):
         out = RESULTS_DIR / f"confidence_contours{suffix}.{ext}"
         fig.savefig(out)
         print(f"Saved {out}", flush=True)
@@ -452,82 +532,84 @@ def plot_contours(df, eqs, modes, suffix=""):
 
 
 def plot_overlay(df, suffix=""):
-    """Overlay INST and SS contours in one panel per equilibrium mode.
+    """Overlay INST and SS contours for the near-equilibrium case (single panel).
 
-    Color encodes confidence (batlow); line style encodes the experiment
-    (INST solid/o, SS dashed/s). INST is drawn last so it stays visible — its
-    region is much tighter than SS, so the overlay shows the scale difference
-    directly.
+    Colour encodes the experiment (INST blue, SS salmon); the three confidence
+    intervals share each hue and differ only by saturation. INST is drawn last so
+    its much tighter region stays visible on top — the overlay shows the scale
+    difference between the two experiments directly. The panel is square.
     """
     from matplotlib.lines import Line2D
 
     apply_style()
-    alpha_colors = {0.9: cmc.batlow(0.20), 0.75: cmc.batlow(0.50), 0.5: cmc.batlow(0.80)}
     # Drop per-vertex markers when densely sampled (line alone traces the contour).
     dense = df.angle_idx.nunique() > 20
-    mode_style = {
-        "ss": dict(ls="--", marker=("" if dense else "s")),    # drawn first (larger region)
-        "inst": dict(ls="-", marker=("" if dense else "o")),   # drawn last (on top)
-    }
+    marker = "" if dense else "o"
+    alphas_desc = sorted(ALPHA_SAT, key=lambda a: THRESHOLDS[a], reverse=True)
 
-    eqs = [e for e in EQUILIBRIUM_CASES if (df.equilibrium == e).any()]
-    fig, axes = plt.subplots(
-        1, len(eqs), figsize=(DOUBLE_COL, DOUBLE_COL * 0.5), squeeze=False
-    )
+    eq = "ne"  # near-equilibrium only
+    sub_eq = df[df.equilibrium == eq]
+    if sub_eq.empty:
+        print(f"Skipping overlay: no '{eq}' data in results.", flush=True)
+        return
+    fig, ax = plt.subplots(figsize=(4.5, 4.5))
+    true1 = sub_eq.true_fba1.iloc[0]
+    true2 = sub_eq.true_fba2.iloc[0]
 
-    for k, eq in enumerate(eqs):
-        ax = axes[0][k]
-        sub_eq = df[df.equilibrium == eq]
-        true1 = sub_eq.true_fba1.iloc[0]
-        true2 = sub_eq.true_fba2.iloc[0]
-
-        for mode in ("ss", "inst"):
-            sub = sub_eq[sub_eq.sim_mode == mode]
-            if sub.empty:
+    for mode in ("ss", "inst"):  # SS first (larger region, behind)
+        sub = sub_eq[sub_eq.sim_mode == mode]
+        if sub.empty:
+            continue
+        for alpha in alphas_desc:
+            cs = sub[sub.alpha == alpha].sort_values("theta_deg")
+            xs = cs.fba2_crossing.to_numpy(dtype=float)
+            ys = cs.fba1_crossing.to_numpy(dtype=float)
+            finite = np.isfinite(xs) & np.isfinite(ys)
+            if finite.sum() == 0:
                 continue
-            for alpha in sorted(alpha_colors, key=lambda a: THRESHOLDS[a], reverse=True):
-                cs = sub[sub.alpha == alpha].sort_values("theta_deg")
-                xs = cs.fba2_crossing.to_numpy()
-                ys = cs.fba1_crossing.to_numpy()
-                finite = np.isfinite(xs) & np.isfinite(ys)
-                if finite.sum() == 0:
-                    continue
-                xf, yf = xs[finite], ys[finite]
-                if finite.all():  # close polygon only if every ray is bounded
-                    xf = np.append(xf, xf[0])
-                    yf = np.append(yf, yf[0])
-                ax.plot(
-                    xf, yf, color=alpha_colors[alpha], ms=2.5, lw=1.0,
-                    zorder=4 if mode == "inst" else 3, **mode_style[mode],
-                )
+            # Drop failed rays, subsample every third point, then join the
+            # remaining points into a closed loop (connect straight across a
+            # failure rather than gapping).
+            xf, yf = xs[finite][::3], ys[finite][::3]
+            xf = np.append(xf, xf[0])
+            yf = np.append(yf, yf[0])
+            ax.plot(
+                xf, yf, ls="-", marker=marker, alpha=0.7,
+                color=_desaturate(EXPERIMENT_COLORS[mode], ALPHA_SAT[alpha]),
+                ms=2.5, lw=0.6, zorder=4 if mode == "inst" else 3,
+            )
 
-        ax.plot(true2, true1, marker="*", color="red", ms=11, zorder=6,
-                linestyle="none")
-        if bool(sub_eq.unbounded.any()):
-            ax.text(0.03, 0.03, "open (unbounded) direction(s)", transform=ax.transAxes,
-                    ha="left", va="bottom", fontsize=6, color="0.3")
-        ax.set_xlabel("FBA2 ΔG (kJ/mol)")
-        ax.set_ylabel("FBA1 ΔG (kJ/mol)")
-        ax.invert_xaxis()
-        ax.invert_yaxis()
-        ax.set_title(EQUILIBRIUM_CASES[eq]["label"])
+    # Reference diagonal (FBA2, FBA1).
+    ax.plot([-0.36, -0.51], [-0.51, -0.36], color="black", lw=0.9, alpha=0.5, zorder=5)
+    ax.plot(true2, true1, marker="x", color="black", ms=3.5, mew=1.1, zorder=6,
+            linestyle="none")
+    ax.set_xlabel("FBA2 ΔG (kJ/mol)", fontsize=7)
+    ax.set_ylabel("FBA1 ΔG (kJ/mol)", fontsize=7)
+    ax.tick_params(labelsize=5)
+    ax.invert_xaxis()
+    ax.invert_yaxis()
+    ax.set_box_aspect(1)  # square plotting box
+    ax.set_title("Near-equilibrium: INST vs SS confidence regions", fontsize=8)
 
-    # Manual legend: color = confidence, line style = experiment.
-    conf_handles = [
-        Line2D([], [], color=alpha_colors[a], lw=2, label=f"{round((1 - a) * 100)}% conf")
-        for a in sorted(alpha_colors, key=lambda a: THRESHOLDS[a], reverse=True)
+    # Legend: colour = experiment, saturation = confidence interval.
+    exp_handles = [
+        Line2D([], [], color=EXPERIMENT_COLORS["inst"], lw=2, label="INST"),
+        Line2D([], [], color=EXPERIMENT_COLORS["ss"], lw=2, label="SS"),
     ]
-    mode_handles = [
-        Line2D([], [], color="0.3", ls="-", marker="o", ms=3, label="INST"),
-        Line2D([], [], color="0.3", ls="--", marker="s", ms=3, label="SS"),
+    # Saturation ramp shown on the INST hue; the same scaling applies to SS.
+    sat_handles = [
+        Line2D([], [], color=_desaturate(EXPERIMENT_COLORS["inst"], ALPHA_SAT[a]), lw=2,
+               label=f"{round((1 - a) * 100)}% conf")
+        for a in alphas_desc
     ]
-    star = Line2D([], [], color="red", marker="*", ls="none", ms=8, label="true point")
-    axes[0][0].legend(handles=conf_handles + mode_handles + [star], fontsize=6, loc="best")
+    point = Line2D([], [], color="black", marker="x", ls="none", ms=4, mew=1.1,
+                   label="reference point")
+    ax.legend(handles=exp_handles + sat_handles + [point], fontsize=4,
+              loc="center left", bbox_to_anchor=(1.02, 0.5))
 
-    fig.suptitle("INST vs SS confidence regions overlaid (FBA1 vs FBA2 ΔG)", y=1.02)
     fig.tight_layout()
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    for ext in ("png", "pdf"):
+    for ext in ("png", "pdf", "svg"):
         out = RESULTS_DIR / f"confidence_contours_overlay{suffix}.{ext}"
         fig.savefig(out)
         print(f"Saved {out}", flush=True)
@@ -565,6 +647,8 @@ def main():
                         help="Which equilibrium case(s) to compute (default: all).")
     parser.add_argument("--angles", type=int, default=N_ANGLES,
                         help=f"Number of ray angles around the circle (default: {N_ANGLES}).")
+    parser.add_argument("--workers", type=int, default=N_WORKERS,
+                        help=f"Parallel worker processes (default: {N_WORKERS}; 1 = serial).")
     args = parser.parse_args()
 
     if args.plot_only:
@@ -589,6 +673,15 @@ def main():
         modes = SIM_MODES
         alphas = ALPHA_LEVELS
 
+    # One worker per ray at most; cap so the pool isn't larger than the work.
+    n_tasks = len(modes) * n_angles
+    n_workers = max(1, min(args.workers, n_tasks))
+
+    # Keep each freeflux/BLAS solve single-threaded so 12 worker processes don't
+    # oversubscribe the cores. Set in the parent so spawned children inherit it.
+    for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+        os.environ.setdefault(var, "1")
+
     angles = np.linspace(0.0, 2 * np.pi, n_angles, endpoint=False)
 
     print("Chi-squared thresholds chi2.ppf(1 - alpha, df=2):", flush=True)
@@ -598,10 +691,14 @@ def main():
     t0 = time.time()
     rows = []
     for eq in eqs:
-        rows += run_equilibrium(eq, angles, modes, alphas)
+        rows += run_equilibrium(eq, angles, modes, alphas, n_workers)
     elapsed = time.time() - t0
 
     df = pd.DataFrame(rows)
+    # Workers return rays out of order; sort for a stable, diff-friendly CSV.
+    df = df.sort_values(
+        ["equilibrium", "sim_mode", "angle_idx", "alpha"]
+    ).reset_index(drop=True)
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     suffix = "_smoke" if args.smoke else ""
     csv_path = RESULTS_DIR / f"confidence_contours{suffix}.csv"
