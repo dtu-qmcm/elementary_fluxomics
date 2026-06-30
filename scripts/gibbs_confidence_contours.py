@@ -553,8 +553,6 @@ def plot_overlay(df, suffix=""):
     its much tighter region stays visible on top — the overlay shows the scale
     difference between the two experiments directly. The panel is square.
     """
-    from matplotlib.lines import Line2D
-
     apply_style()
     # Drop per-vertex markers when densely sampled (line alone traces the contour).
     dense = df.angle_idx.nunique() > 20
@@ -600,26 +598,17 @@ def plot_overlay(df, suffix=""):
     ax.set_xlabel("FBA2 ΔG (kJ/mol)", fontsize=7)
     ax.set_ylabel("FBA1 ΔG (kJ/mol)", fontsize=7)
     ax.tick_params(labelsize=5)
+    # Give both axes the same span so a unit of ΔG is the same distance on each;
+    # combined with the square box the two axis bars are equal length.
+    x0, x1 = sorted(ax.get_xlim())
+    y0, y1 = sorted(ax.get_ylim())
+    span = max(x1 - x0, y1 - y0)
+    xc, yc = (x0 + x1) / 2, (y0 + y1) / 2
+    ax.set_xlim(xc - span / 2, xc + span / 2)
+    ax.set_ylim(yc - span / 2, yc + span / 2)
     ax.invert_xaxis()
     ax.invert_yaxis()
     ax.set_box_aspect(1)  # square plotting box
-    ax.set_title("Near-equilibrium: INST vs SS confidence regions", fontsize=8)
-
-    # Legend: colour = experiment, saturation = confidence interval.
-    exp_handles = [
-        Line2D([], [], color=EXPERIMENT_COLORS["inst"], lw=2, label="INST"),
-        Line2D([], [], color=EXPERIMENT_COLORS["ss"], lw=2, label="SS"),
-    ]
-    # Saturation ramp shown on the INST hue; the same scaling applies to SS.
-    sat_handles = [
-        Line2D([], [], color=_desaturate(EXPERIMENT_COLORS["inst"], ALPHA_SAT[a]), lw=2,
-               label=f"{round((1 - a) * 100)}% conf")
-        for a in alphas_desc
-    ]
-    point = Line2D([], [], color="black", marker="x", ls="none", ms=4, mew=1.1,
-                   label="reference point")
-    ax.legend(handles=exp_handles + sat_handles + [point], fontsize=4,
-              loc="center left", bbox_to_anchor=(1.02, 0.5))
 
     fig.tight_layout()
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
