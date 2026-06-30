@@ -458,6 +458,10 @@ def run_equilibrium(eq, angles, modes, alphas, n_workers):
 # only by saturation (more saturated = smaller/higher-confidence region).
 EXPERIMENT_COLORS = {"inst": "#1f6fb2", "ss": "salmon"}  # blue / salmon
 ALPHA_SAT = {0.9: 1.0, 0.75: 0.6, 0.5: 0.32}  # alpha 0.9 = 10% region = innermost
+# Confidence interval encoded by line style: 10% solid, 25% dashed, 50% dotted.
+# Kept off the legend (legend handles stay solid) — style differentiates only the
+# drawn contours.
+ALPHA_LINESTYLE = {0.9: "-", 0.75: "--", 0.5: ":"}
 
 
 def _desaturate(color, scale):
@@ -502,12 +506,12 @@ def plot_contours(df, eqs, modes, suffix=""):
                     xf = np.append(xf, xf[0])
                     yf = np.append(yf, yf[0])
                 ax.plot(
-                    xf, yf, ls="-", marker=marker, color=alpha_colors[alpha], ms=3, lw=1.0,
-                    label=f"{round((1 - alpha) * 100)}% (α={alpha})",
+                    xf, yf, ls=ALPHA_LINESTYLE[alpha], marker=marker,
+                    color=alpha_colors[alpha], ms=3, lw=1.0,
                 )
 
             ax.plot(true2, true1, marker="*", color="red", ms=11, zorder=5,
-                    linestyle="none", label="true point")
+                    linestyle="none")
 
             if bool(sub.unbounded.any()):
                 ax.text(0.03, 0.97, "open (unbounded) direction(s)", transform=ax.transAxes,
@@ -519,7 +523,17 @@ def plot_contours(df, eqs, modes, suffix=""):
             ax.invert_yaxis()
             ax.set_title(f"{EQUILIBRIUM_CASES[eq]['label']} — {mode.upper()}")
             if i == 0 and j == 0:
-                ax.legend(loc="best", fontsize=6)
+                # Solid handles only: line style encodes confidence on the
+                # contours themselves, not in the legend.
+                from matplotlib.lines import Line2D
+                handles = [
+                    Line2D([], [], color=alpha_colors[a], lw=1.5,
+                           label=f"{round((1 - a) * 100)}% (α={a})")
+                    for a in sorted(alpha_colors, key=lambda a: THRESHOLDS[a], reverse=True)
+                ]
+                handles.append(Line2D([], [], color="red", marker="*", ls="none",
+                                      ms=9, label="true point"))
+                ax.legend(handles=handles, loc="best", fontsize=6)
 
     fig.suptitle("Likelihood-ratio confidence contours (FBA1 vs FBA2 ΔG)", y=1.01)
     fig.tight_layout()
@@ -574,7 +588,7 @@ def plot_overlay(df, suffix=""):
             xf = np.append(xf, xf[0])
             yf = np.append(yf, yf[0])
             ax.plot(
-                xf, yf, ls="-", marker=marker, alpha=0.7,
+                xf, yf, ls=ALPHA_LINESTYLE[alpha], marker=marker, alpha=0.7,
                 color=_desaturate(EXPERIMENT_COLORS[mode], ALPHA_SAT[alpha]),
                 ms=2.5, lw=0.6, zorder=4 if mode == "inst" else 3,
             )
