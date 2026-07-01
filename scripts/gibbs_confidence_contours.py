@@ -517,8 +517,8 @@ def plot_contours(df, eqs, modes, suffix=""):
                 ax.text(0.03, 0.97, "open (unbounded) direction(s)", transform=ax.transAxes,
                         ha="left", va="top", fontsize=6, color="0.3")
 
-            ax.set_xlabel("FBA2 ΔG (kJ/mol)")
-            ax.set_ylabel("FBA1 ΔG (kJ/mol)")
+            ax.set_xlabel(r"$\Delta_r G_{\mathrm{FBA}_2}$ $\left(\frac{kJ}{mol}\right)$")
+            ax.set_ylabel(r"$\Delta_r G_{\mathrm{FBA}_1}$ $\left(\frac{kJ}{mol}\right)$")
             ax.invert_xaxis()  # match landscape orientation (more negative = upper-right)
             ax.invert_yaxis()
             ax.set_title(f"{EQUILIBRIUM_CASES[eq]['label']} — {mode.upper()}")
@@ -595,8 +595,8 @@ def plot_overlay(df, suffix=""):
     ax.plot([-0.36, -0.51], [-0.51, -0.36], color="black", lw=0.9, alpha=0.5, zorder=5)
     ax.plot(true2, true1, marker="x", color="black", ms=3.5, mew=1.1, zorder=6,
             linestyle="none")
-    ax.set_xlabel("FBA2 ΔG (kJ/mol)", fontsize=7)
-    ax.set_ylabel("FBA1 ΔG (kJ/mol)", fontsize=7)
+    ax.set_xlabel(r"$\Delta_r G_{\mathrm{FBA}_2}$ $\left(\frac{kJ}{mol}\right)$", fontsize=7)
+    ax.set_ylabel(r"$\Delta_r G_{\mathrm{FBA}_1}$ $\left(\frac{kJ}{mol}\right)$", fontsize=7)
     ax.tick_params(labelsize=5)
     # Give both axes the same span so a unit of ΔG is the same distance on each;
     # combined with the square box the two axis bars are equal length.
