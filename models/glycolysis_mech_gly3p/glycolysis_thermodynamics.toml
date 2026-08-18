@@ -101,17 +101,38 @@ deltaG_prime = -10.0
 is_transport = true
 proton_balance = 0
 
-[reactions.TKTL1]
-deltaG_prime = -1.0
+# Non-oxidative PPP: transketolase / transaldolase half reactions
+# Overall reactions (lumped) each had deltaG = -1.0 kJ/mol:
+#   TKT1: xu5p + r5p  <-> s7p + g3p   = X5P_EC2 forward + S7P_EC2 reverse
+#   TKT2: xu5p + e4p  <-> f6p + g3p   = X5P_EC2 forward + F6P_EC2 reverse
+#   TALA: s7p  + g3p  <-> e4p + f6p   = S7P_EC3 forward + F6P_EC3 reverse
+# Even split: each half reaction takes half the magnitude, 0.5 kJ/mol.
+# The sign follows each half reaction's net direction as written in
+# reactions.tsv, so the three that run backwards take a POSITIVE deltaG. This
+# reproduces the lumped values exactly, e.g.
+#   dG(X5P_EC2) - dG(S7P_EC2) = -0.5 - 0.5 = -1.0
+
+[reactions.X5P_EC2]
+deltaG_prime = -0.5
 is_transport = false
 proton_balance = 0
 
-[reactions.TKTL2]
-deltaG_prime = -1.0
+[reactions.F6P_EC2]
+deltaG_prime = 0.5
 is_transport = false
 proton_balance = 0
 
-[reactions.TALA]
-deltaG_prime = -1.0
+[reactions.S7P_EC2]
+deltaG_prime = 0.5
+is_transport = false
+proton_balance = 0
+
+[reactions.F6P_EC3]
+deltaG_prime = 0.5
+is_transport = false
+proton_balance = 0
+
+[reactions.S7P_EC3]
+deltaG_prime = -0.5
 is_transport = false
 proton_balance = 0

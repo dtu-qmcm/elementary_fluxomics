@@ -78,6 +78,63 @@ FBA2: FBA_dhap(abc) → dhap(abc)                 # dhap released from enzyme
 
 This allows separate Gibbs energy values for each step (default: FBA1=-3.0, FBA2=-2.0 kJ/mol).
 
+#### Transketolase / Transaldolase Decomposition
+
+**Both** glycolysis models write the non-oxidative PPP as elementary half reactions
+instead of the lumped `TKTL1`/`TKTL2`/`TALA` overall reactions. Carbon passes through
+two enzyme-bound carriers: `EC2` (2 carbons, on transketolase) and `EC3` (3 carbons,
+on transaldolase):
+
+```
+X5P_EC2: xu5p__D(abcde)  → EC2(ab) + g3p(cde)
+F6P_EC2: f6p(abcdef)     → EC2(ab) + e4p(cdef)
+S7P_EC2: s7p(abcdefg)    → EC2(ab) + r5p(cdefg)
+F6P_EC3: f6p(abcdef)     → EC3(abc) + g3p(def)
+S7P_EC3: s7p(abcdefg)    → EC3(abc) + e4p(defg)
+```
+
+Each overall reaction is one half reaction forward plus another in reverse:
+
+| Overall reaction | Decomposition |
+|---|---|
+| TKT1: xu5p + r5p ↔ s7p + g3p | `X5P_EC2` forward + `S7P_EC2` reverse |
+| TKT2: xu5p + e4p ↔ f6p + g3p | `X5P_EC2` forward + `F6P_EC2` reverse |
+| TALA: s7p + g3p ↔ e4p + f6p | `S7P_EC3` forward + `F6P_EC3` reverse |
+
+Balancing the `EC2` and `EC3` pools fixes the net fluxes. With each overall reaction
+carrying 5.4843 mmol/gDCW/h:
+
+```
+X5P_EC2 =  TKT1 + TKT2 =  10.9686      S7P_EC3 =  TALA =  5.4843
+S7P_EC2 = -TKT1        =  -5.4843      F6P_EC3 = -TALA = -5.4843
+F6P_EC2 = -TKT2        =  -5.4843
+```
+
+**Sign convention (important).** `F6P_EC2`, `S7P_EC2` and `F6P_EC3` run *backwards*
+relative to how they are written in `reactions.tsv`, so they carry a **negative net
+flux** and, for thermodynamic consistency (`ΔG = −RT·ln(v_f/v_b)`), a **positive
+ΔG**. `net_to_forward_backward()` handles this and still returns positive `v_f` and
+`v_b` (with `v_b > v_f`). Two consequences:
+
+- ΔG values *subtract* rather than add: `ΔG_TKT1 = ΔG(X5P_EC2) − ΔG(S7P_EC2)`.
+  The lumped ΔG is split evenly in magnitude, so each half reaction gets ±0.5 kJ/mol
+  (far-from-equilibrium) or ±0.25 kJ/mol (near-equilibrium).
+- `freeflux` applies `set_flux_bounds` to **net** fluxes, so any fitting code must
+  allow negative bounds for these three reactions. See `NEGATIVE_NET_RXNS` in
+  `scripts/fit_mechanistic_vs_aggregated.py`.
+
+`EC2`/`EC3` are enzyme-bound, so scripts that give `FBA_dhap` a small pool give them
+the same (see `ENZYME_BOUND_METABOLITES`).
+
+#### Flux Balance
+
+The flux distributions in both `glycolysis_fluxes.toml` files close **exactly** for
+every internal metabolite. The independent fluxes are `glc_uptake` (100.0043),
+`G6PDH2r_PGL` (17.4529), `r5p_drain` (1.0), `GLY3PDH` (5.0) and `LDH` (100.0); the
+rest follow from stoichiometry. `INITIAL_FLUXES_MMOL`
+(`scripts/fit_mechanistic_vs_aggregated.py`) and `TRUE_NET_FLUXES_MMOL`
+(`scripts/plot_flux_error_heatmaps.py`) duplicate these values and must stay in sync.
+
 ## Gibbs Energy Analysis Scripts
 
 Scripts for analyzing how Gibbs energy parameters affect isotope labeling patterns using INST (isotopically non-stationary) simulations.

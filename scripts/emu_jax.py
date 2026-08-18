@@ -750,7 +750,7 @@ def run_glycolysis_simulation(
     # Default concentrations
     concentrations = {}
     for metab in model.metabolites:
-        if metab == "FBA_dhap":
+        if metab in ("FBA_dhap", "EC2", "EC3"):
             concentrations[metab] = 0.1
         else:
             concentrations[metab] = 1.0

@@ -41,6 +41,10 @@ FRACTIONS = np.arange(0.1, 0.91, 0.05)
 # Gas constant in kJ/(mol*K)
 R = 8.314e-3
 
+# Enzyme-bound intermediates (FBA_dhap, and the transketolase/transaldolase
+# EC2/EC3 carriers) are given a small pool rather than the bulk default.
+ENZYME_BOUND_METABOLITES = ("FBA_dhap", "EC2", "EC3")
+
 # Timepoints: 100 points logarithmically spaced from 1e-3s to 1e1s
 TIMEPOINTS = list(np.logspace(-3, 1, 100))
 
@@ -165,7 +169,7 @@ def run_simulation(model_dir, model_name, thermo_overrides=None):
             isim.set_flux(flux_id, value)
 
         for metab in model.metabolites:
-            if metab == "FBA_dhap":
+            if metab in ENZYME_BOUND_METABOLITES:
                 isim.set_concentration(metab, 0.01)
             else:
                 isim.set_concentration(metab, 1.0)

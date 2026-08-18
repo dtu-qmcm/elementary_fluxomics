@@ -122,6 +122,18 @@ n_atoms = 4
 pool_size = 1.0
 is_external = false
 
+[metabolites.EC2]
+name = "Transketolase-bound 2-carbon carrier (dihydroxyethyl-TPP)"
+n_atoms = 2
+pool_size = 1.0
+is_external = false
+
+[metabolites.EC3]
+name = "Transaldolase-bound 3-carbon carrier (dihydroxyacetone)"
+n_atoms = 3
+pool_size = 1.0
+is_external = false
+
 [metabolites.co2]
 name = "Carbon dioxide"
 n_atoms = 1
@@ -412,76 +424,101 @@ r5p_e = [[0, 1, 2, 3, 4]]
 "3" = 3
 "4" = 4
 
-[reactions.TKTL1]
-name = "Transketolase 1"
+[reactions.X5P_EC2]
+name = "Transketolase half reaction: xylulose-5-P cleavage"
 reversible = true
 
-[reactions.TKTL1.substrate_carbons]
-r5p = [[0, 1, 2, 3, 4]]
-xu5p__D = [[5, 6, 7, 8, 9]]
-
-[reactions.TKTL1.product_carbons]
-s7p = [[5, 6, 0, 1, 2, 3, 4]]
-g3p = [[7, 8, 9]]
-
-[reactions.TKTL1.transition]
-"0" = 2
-"1" = 3
-"2" = 4
-"3" = 5
-"4" = 6
-"5" = 0
-"6" = 1
-"7" = 7
-"8" = 8
-"9" = 9
-
-[reactions.TKTL2]
-name = "Transketolase 2"
-reversible = true
-
-[reactions.TKTL2.substrate_carbons]
+[reactions.X5P_EC2.substrate_carbons]
 xu5p__D = [[0, 1, 2, 3, 4]]
-e4p = [[5, 6, 7, 8]]
 
-[reactions.TKTL2.product_carbons]
-f6p = [[0, 1, 5, 6, 7, 8]]
+[reactions.X5P_EC2.product_carbons]
+EC2 = [[0, 1]]
 g3p = [[2, 3, 4]]
 
-[reactions.TKTL2.transition]
+[reactions.X5P_EC2.transition]
 "0" = 0
 "1" = 1
-"2" = 6
-"3" = 7
-"4" = 8
-"5" = 2
-"6" = 3
-"7" = 4
-"8" = 5
+"2" = 2
+"3" = 3
+"4" = 4
 
-[reactions.TALA]
-name = "Transaldolase"
+[reactions.F6P_EC2]
+name = "Transketolase half reaction: fructose-6-P cleavage"
 reversible = true
 
-[reactions.TALA.substrate_carbons]
+[reactions.F6P_EC2.substrate_carbons]
+f6p = [[0, 1, 2, 3, 4, 5]]
+
+[reactions.F6P_EC2.product_carbons]
+EC2 = [[0, 1]]
+e4p = [[2, 3, 4, 5]]
+
+[reactions.F6P_EC2.transition]
+"0" = 0
+"1" = 1
+"2" = 2
+"3" = 3
+"4" = 4
+"5" = 5
+
+[reactions.S7P_EC2]
+name = "Transketolase half reaction: sedoheptulose-7-P cleavage"
+reversible = true
+
+[reactions.S7P_EC2.substrate_carbons]
 s7p = [[0, 1, 2, 3, 4, 5, 6]]
-g3p = [[7, 8, 9]]
 
-[reactions.TALA.product_carbons]
+[reactions.S7P_EC2.product_carbons]
+EC2 = [[0, 1]]
+r5p = [[2, 3, 4, 5, 6]]
+
+[reactions.S7P_EC2.transition]
+"0" = 0
+"1" = 1
+"2" = 2
+"3" = 3
+"4" = 4
+"5" = 5
+"6" = 6
+
+[reactions.F6P_EC3]
+name = "Transaldolase half reaction: fructose-6-P cleavage"
+reversible = true
+
+[reactions.F6P_EC3.substrate_carbons]
+f6p = [[0, 1, 2, 3, 4, 5]]
+
+[reactions.F6P_EC3.product_carbons]
+EC3 = [[0, 1, 2]]
+g3p = [[3, 4, 5]]
+
+[reactions.F6P_EC3.transition]
+"0" = 0
+"1" = 1
+"2" = 2
+"3" = 3
+"4" = 4
+"5" = 5
+
+[reactions.S7P_EC3]
+name = "Transaldolase half reaction: sedoheptulose-7-P cleavage"
+reversible = true
+
+[reactions.S7P_EC3.substrate_carbons]
+s7p = [[0, 1, 2, 3, 4, 5, 6]]
+
+[reactions.S7P_EC3.product_carbons]
+EC3 = [[0, 1, 2]]
 e4p = [[3, 4, 5, 6]]
-f6p = [[0, 1, 2, 7, 8, 9]]
 
-[reactions.TALA.transition]
-"0" = 4
-"1" = 5
-"2" = 6
-"3" = 0
-"4" = 1
-"5" = 2
-"6" = 3
-"7" = 7
-"8" = 8
-"9" = 9
+[reactions.S7P_EC3.transition]
+"0" = 0
+"1" = 1
+"2" = 2
+"3" = 3
+"4" = 4
+"5" = 5
+"6" = 6
 
 [validation]
 carbon_balanced = true

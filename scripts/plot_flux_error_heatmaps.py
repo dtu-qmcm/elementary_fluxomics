@@ -33,24 +33,29 @@ TRUE_NET_FLUXES_MMOL = {
     "glc_input": 100.0043,
     "GLUT2": 100.0043,
     "HEX": 100.0043,
-    "GPI": 82.5515,
+    "GPI": 82.5514,
     "PFK": 93.52,
     "FBA": 93.52,
     "GLY3PDH": 5.0,
     "TPI": 88.52,
-    "GAPD_PGK": 187.5244,
-    "PGM": 187.5244,
-    "PYK": 187.5244,
-    "pyr_drain": 87.5244,
+    "GAPD_PGK": 187.5243,
+    "PGM": 187.5243,
+    "PYK": 187.5243,
+    "pyr_drain": 87.5243,
     "LDH": 100.0,
-    "G6PDH2r_PGL": 17.4528,
-    "GND": 17.4528,
-    "RPI": 6.4842,
-    "RPE": 10.9685,
+    "G6PDH2r_PGL": 17.4529,
+    "GND": 17.4529,
+    "RPI": 6.4843,
+    "RPE": 10.9686,
     "r5p_drain": 1.0,
-    "TKTL1": 5.4843,
-    "TKTL2": 5.4843,
-    "TALA": 5.4843,
+    # Transketolase/transaldolase half reactions via the enzyme-bound EC2 and
+    # EC3 carriers. Negative means the half reaction runs backwards relative to
+    # how it is written in reactions.tsv.
+    "X5P_EC2": 10.9686,
+    "F6P_EC2": -5.4843,
+    "S7P_EC2": -5.4843,
+    "F6P_EC3": -5.4843,
+    "S7P_EC3": 5.4843,
 }
 
 TRUE_NET_FLUXES = {k: v * CONVERSION_FACTOR for k, v in TRUE_NET_FLUXES_MMOL.items()}
@@ -60,7 +65,7 @@ REVERSIBLE_RXNS = [
     "GLUT2", "HEX", "GPI", "PFK", "FBA", "TPI",
     "GAPD_PGK", "PGM", "PYK",
     "G6PDH2r_PGL", "RPI", "RPE",
-    "TKTL1", "TKTL2", "TALA",
+    "X5P_EC2", "F6P_EC2", "S7P_EC2", "F6P_EC3", "S7P_EC3",
 ]
 
 # Reaction display order
@@ -68,7 +73,7 @@ REACTION_ORDER_NET = [
     "glc_input", "GLUT2", "HEX", "GPI", "PFK", "FBA", "GLY3PDH", "TPI",
     "GAPD_PGK", "PGM", "PYK", "pyr_drain", "LDH",
     "G6PDH2r_PGL", "GND", "RPI", "RPE", "r5p_drain",
-    "TKTL1", "TKTL2", "TALA",
+    "X5P_EC2", "F6P_EC2", "S7P_EC2", "F6P_EC3", "S7P_EC3",
 ]
 
 # For reverse fluxes, only reversible reactions

@@ -18,6 +18,8 @@ GND	pgc6(abcdef)	ru5p__D(bcdef)+co2(a)	0
 RPI	ru5p__D(abcde)	r5p(abcde)	1
 RPE	ru5p__D(abcde)	xu5p__D(abcde)	1
 r5p_drain	r5p(abcde)	r5p_e(abcde)	0
-TKTL1	r5p(abcde)+xu5p__D(fghij)	s7p(fgabcde)+g3p(hij)	1
-TKTL2	xu5p__D(abcde)+e4p(fghi)	f6p(abfghi)+g3p(cde)	1
-TALA	s7p(abcdefg)+g3p(hij)	e4p(defg)+f6p(abchij)	1
+X5P_EC2	xu5p__D(abcde)	EC2(ab)+g3p(cde)	1
+F6P_EC2	f6p(abcdef)	EC2(ab)+e4p(cdef)	1
+S7P_EC2	s7p(abcdefg)	EC2(ab)+r5p(cdefg)	1
+F6P_EC3	f6p(abcdef)	EC3(abc)+g3p(def)	1
+S7P_EC3	s7p(abcdefg)	EC3(abc)+e4p(defg)	1

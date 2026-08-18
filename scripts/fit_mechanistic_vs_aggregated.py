@@ -54,7 +54,7 @@ TARGET_EMUS = {
 # Boundary fluxes from mechanistic model (mmol/gDCW/h)
 BOUNDARY_FLUXES = {
     "glc_input": 100.0043,
-    "pyr_drain": 87.5244,
+    "pyr_drain": 87.5243,
     "GLY3PDH": 5.0,
     "LDH": 100.0,
     "r5p_drain": 1.0,
@@ -117,37 +117,50 @@ REACTION_ORDER = [
     "RPI",
     "RPE",
     "r5p_drain",
-    "TKTL1",
-    "TKTL2",
-    "TALA",
+    "X5P_EC2",
+    "F6P_EC2",
+    "S7P_EC2",
+    "F6P_EC3",
+    "S7P_EC3",
 ]
 
-# True net fluxes for the aggregated model (mmol/gDCW/h).
-# Adapted from mechanistic model: FBA1=FBA2=FBA, TPI = FBA - GLY3PDH = 88.52.
+# True net fluxes for the aggregated model (mmol/gDCW/h). Must stay in sync with
+# models/glycolysis_gly3p/glycolysis_fluxes.toml, where every metabolite balance
+# closes exactly. Adapted from mechanistic model: FBA1=FBA2=FBA,
+# TPI = FBA - GLY3PDH = 88.52.
 # Net fluxes are constant across alpha (alpha only changes forward/backward split).
 INITIAL_FLUXES_MMOL = {
     "glc_input": 100.0043,
     "GLUT2": 100.0043,
     "HEX": 100.0043,
-    "GPI": 82.5515,
+    "GPI": 82.5514,
     "PFK": 93.52,
     "FBA": 93.52,
     "GLY3PDH": 5.0,
     "TPI": 88.52,
-    "GAPD_PGK": 187.5244,
-    "PGM": 187.5244,
-    "PYK": 187.5244,
-    "pyr_drain": 87.5244,
+    "GAPD_PGK": 187.5243,
+    "PGM": 187.5243,
+    "PYK": 187.5243,
+    "pyr_drain": 87.5243,
     "LDH": 100.0,
-    "G6PDH2r_PGL": 17.4528,
-    "GND": 17.4528,
-    "RPI": 6.4842,
-    "RPE": 10.9685,
+    "G6PDH2r_PGL": 17.4529,
+    "GND": 17.4529,
+    "RPI": 6.4843,
+    "RPE": 10.9686,
     "r5p_drain": 1.0,
-    "TKTL1": 5.4843,
-    "TKTL2": 5.4843,
-    "TALA": 5.4843,
+    # Transketolase/transaldolase half reactions via the enzyme-bound EC2 and
+    # EC3 carriers. Negative means the half reaction runs backwards relative to
+    # how it is written in reactions.tsv.
+    "X5P_EC2": 10.9686,
+    "F6P_EC2": -5.4843,
+    "S7P_EC2": -5.4843,
+    "F6P_EC3": -5.4843,
+    "S7P_EC3": 5.4843,
 }
+
+# Half reactions whose net flux is negative as written, so their net flux bounds
+# must allow negative values (freeflux applies set_flux_bounds to NET fluxes).
+NEGATIVE_NET_RXNS = ("F6P_EC2", "S7P_EC2", "F6P_EC3")
 
 TRUE_FLUXES = {k: v * CONVERSION_FACTOR for k, v in INITIAL_FLUXES_MMOL.items()}
 
@@ -423,6 +436,11 @@ def fit_model(model_name, model_dir, initial_fluxes_mmol, measured_data, sim_mod
             fitter.set_measured_flux(flux_id, value, MEAS_SD)
 
         fitter.set_flux_bounds("all", [0, 200])
+        # The EC2/EC3 half reactions listed here run in reverse as written,
+        # so [0, 200] would make the fit infeasible. Later calls override
+        # earlier ones, so this only relaxes these three reactions.
+        for _rxn_id in NEGATIVE_NET_RXNS:
+            fitter.set_flux_bounds(_rxn_id, [-200, 0])
 
         fitter.prepare(n_jobs=1)
 

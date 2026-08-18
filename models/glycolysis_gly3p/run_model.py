@@ -185,6 +185,8 @@ def main():
             'xu5p__D': 1.0,     # Xylulose-5-phosphate
             's7p': 1.0,         # Sedoheptulose-7-phosphate
             'e4p': 1.0,         # Erythrose-4-phosphate
+            'EC2': 0.01,        # Transketolase-bound 2-carbon carrier
+            'EC3': 0.01,        # Transaldolase-bound 3-carbon carrier
         }
 
         for metab_id, conc in metabolite_concs.items():

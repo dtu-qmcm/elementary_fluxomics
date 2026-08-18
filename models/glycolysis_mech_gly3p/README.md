@@ -5,8 +5,8 @@ This directory contains a glycolysis and pentose phosphate pathway (PPP) model c
 ## Model Overview
 
 The model includes:
-- **20 metabolites**: Core glycolysis intermediates plus pentose phosphate pathway metabolites
-- **19 reactions**: Complete glycolysis pathway plus oxidative and non-oxidative PPP
+- **25 metabolites**: Core glycolysis intermediates, pentose phosphate pathway metabolites, enzyme-bound carriers, and external source/sink pools
+- **24 reactions**: Complete glycolysis pathway plus oxidative and non-oxidative PPP (the latter as elementary half reactions)
 - **Labeling tracer**: 1,2-¹³C D-Glucose (53.74% enrichment)
 
 ## Key Metabolites
@@ -17,6 +17,7 @@ The model includes:
 - f6p (Fructose 6-phosphate)
 - fdp (Fructose 1,6-bisphosphate)
 - dhap (Dihydroxyacetone phosphate)
+- FBA_dhap (FBA-bound dihydroxyacetone phosphate)
 - g3p (Glyceraldehyde 3-phosphate)
 - 3pg (3-Phosphoglycerate)
 - pep (Phosphoenolpyruvate)
@@ -30,6 +31,8 @@ The model includes:
 - xu5p__D (Xylulose 5-phosphate)
 - s7p (Sedoheptulose 7-phosphate)
 - e4p (Erythrose 4-phosphate)
+- EC2 (Transketolase-bound 2-carbon carrier, dihydroxyethyl-TPP)
+- EC3 (Transaldolase-bound 3-carbon carrier, dihydroxyacetone)
 
 ## Key Reactions
 
@@ -38,7 +41,10 @@ The model includes:
 - HEX: Hexokinase
 - GPI: Glucose-6-phosphate isomerase
 - PFK: Phosphofructokinase
-- FBA: Fructose-bisphosphate aldolase (splits 6C -> 3C + 3C)
+- FBA1: Fructose-bisphosphate aldolase, first elementary step
+  (fdp -> g3p + FBA_dhap; g3p released, dhap still enzyme-bound)
+- FBA2: Fructose-bisphosphate aldolase, second elementary step
+  (FBA_dhap -> dhap; dhap released from the enzyme)
 - TPI: Triose-phosphate isomerase
 - GAPD_PGK: Combined GAPD + PGK
 - PGM: Phosphoglycerate mutase
@@ -50,8 +56,28 @@ The model includes:
 - GND: 6-Phosphogluconate dehydrogenase (produces CO₂)
 - RPI: Ribose-5-phosphate isomerase
 - RPE: Ribulose-5-phosphate epimerase
-- TKTL1, TKTL2: Transketolase reactions
-- TALA: Transaldolase
+
+The non-oxidative branch is written as elementary half reactions rather than the
+lumped TKTL1/TKTL2/TALA overall reactions. Carbon passes through two enzyme-bound
+carriers, EC2 (2 carbons, on transketolase) and EC3 (3 carbons, on transaldolase):
+
+- X5P_EC2: xu5p__D -> EC2 + g3p (transketolase, xylulose-5-P cleavage)
+- F6P_EC2: f6p -> EC2 + e4p (transketolase, fructose-6-P cleavage)
+- S7P_EC2: s7p -> EC2 + r5p (transketolase, sedoheptulose-7-P cleavage)
+- F6P_EC3: f6p -> EC3 + g3p (transaldolase, fructose-6-P cleavage)
+- S7P_EC3: s7p -> EC3 + e4p (transaldolase, sedoheptulose-7-P cleavage)
+
+Each overall reaction is one half reaction forward plus another in reverse:
+
+| Overall reaction | Decomposition |
+|---|---|
+| TKT1: xu5p + r5p <-> s7p + g3p | X5P_EC2 forward + S7P_EC2 reverse |
+| TKT2: xu5p + e4p <-> f6p + g3p | X5P_EC2 forward + F6P_EC2 reverse |
+| TALA: s7p + g3p <-> e4p + f6p | S7P_EC3 forward + F6P_EC3 reverse |
+
+Balancing the EC2 and EC3 pools gives the net fluxes. `F6P_EC2`, `S7P_EC2` and
+`F6P_EC3` run backwards relative to how they are written, so they carry a
+negative net flux and a positive deltaG.
 
 ## Files
 
@@ -94,7 +120,7 @@ With 1,2-¹³C glucose labeling (53.74% enrichment at positions C1 and C2):
 
 ## Notes
 
-- The model uses the explicit substrates/products format for reactions with multiple products (FBA, GND, transketolase, transaldolase)
+- The model uses the explicit substrates/products format for reactions with multiple products (FBA, GND, the transketolase/transaldolase half reactions)
 - Flux values are approximate and represent typical mammalian cell metabolism
 - The model is at steady state (constant pool sizes and fluxes)
 - Simulation runs from 0.1 to 100 seconds to reach isotopic steady state

@@ -62,7 +62,7 @@ REVERSIBLE_RXNS = [
     "GLUT2", "HEX", "GPI", "PFK", "FBA", "TPI",
     "GAPD_PGK", "PGM", "PYK",
     "G6PDH2r_PGL", "RPI", "RPE",
-    "TKTL1", "TKTL2", "TALA",
+    "X5P_EC2", "F6P_EC2", "S7P_EC2", "F6P_EC3", "S7P_EC3",
 ]
 
 # Thermodynamic conditions: thermo file + true total (lumped) FBA dG.
