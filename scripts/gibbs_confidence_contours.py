@@ -545,6 +545,27 @@ def plot_contours(df, eqs, modes, suffix=""):
     plt.close(fig)
 
 
+def _diagonal_endpoints(sub_eq, alpha_outer, true1, true2, fallback=0.106):
+    """Endpoints of the y = -x reference line through the true point.
+
+    The SS region is elongated along the ``dG_FBA1 = -dG_FBA2`` direction (the rays
+    at theta = 135 / 315 deg), so the line is stretched out to where the *outermost*
+    SS contour crosses it instead of stopping partway inside. Returns (xs, ys) in
+    plot coordinates (x = FBA2, y = FBA1).
+    """
+    ss = sub_eq[(sub_eq.sim_mode == "ss") & (sub_eq.alpha == alpha_outer)]
+    ss = ss.dropna(subset=["d_crossing"]).sort_values("theta_deg")
+    xs, ys = [], []
+    for theta_deg in (135.0, 315.0):
+        d = float(np.interp(theta_deg, ss.theta_deg, ss.d_crossing)) if len(ss) else np.nan
+        if not np.isfinite(d):
+            d = fallback
+        th = np.radians(theta_deg)
+        ys.append(true1 + d * np.cos(th))
+        xs.append(true2 + d * np.sin(th))
+    return xs, ys
+
+
 def plot_overlay(df, suffix=""):
     """Overlay INST and SS contours for the near-equilibrium case (single panel).
 
@@ -591,8 +612,9 @@ def plot_overlay(df, suffix=""):
                 ms=2.5, lw=0.6, zorder=4 if mode == "inst" else 3,
             )
 
-    # Reference diagonal (FBA2, FBA1).
-    ax.plot([-0.36, -0.51], [-0.51, -0.36], color="black", lw=0.9, alpha=0.5, zorder=5)
+    # Reference diagonal (FBA2, FBA1), spanning the full SS degeneracy axis.
+    diag_x, diag_y = _diagonal_endpoints(sub_eq, alphas_desc[0], true1, true2)
+    ax.plot(diag_x, diag_y, color="black", lw=0.9, alpha=0.5, zorder=5)
     ax.plot(true2, true1, marker="x", color="black", ms=3.5, mew=1.1, zorder=6,
             linestyle="none")
     ax.set_xlabel(r"$\Delta_r G_{\mathrm{FBA}_2}$ $\left(\frac{kJ}{mol}\right)$", fontsize=7)
