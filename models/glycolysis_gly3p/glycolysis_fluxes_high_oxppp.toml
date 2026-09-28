@@ -1,0 +1,60 @@
+[metadata]
+description = "Glycolysis flux distribution: high oxPPP, PFK/oxPPP split 50/50"
+units = "mmol/g_DCW/h"
+steady_state = true
+
+# ============================================================================
+# External Fluxes (uptake and secretion rates)
+# ============================================================================
+
+[external_fluxes]
+glc_uptake = 100.0         # Glucose uptake
+pyr_secretion = 68.5       # Pyruvate secretion
+
+# ============================================================================
+# Internal Fluxes (reaction rates)
+# ============================================================================
+#
+# High-oxPPP regime: the oxidative PPP (G6PDH2r_PGL) carries the same flux
+# as PFK, a 50/50 split. The oxPPP returns its carbon to f6p/g3p via the
+# non-oxidative PPP, so PFK = GPI + 2/3 of the (oxPPP - r5p_drain) flux.
+#
+# Every metabolite balance closes exactly. The independent fluxes are
+# glc_uptake, r5p_drain, GLY3PDH and LDH, plus the constraint
+# PFK = G6PDH2r_PGL; the rest follow from stoichiometry.
+
+[internal_fluxes]
+# Main glycolysis pathway
+GLUT2 = 100.0              # Glucose transport
+HEX = 100.0                # Hexokinase
+GPI = 25.5                 # Glucose-6-phosphate isomerase
+PFK = 74.5                 # Phosphofructokinase (= G6PDH2r_PGL)
+FBA = 74.5                 # Fructose-bisphosphate aldolase
+GLY3PDH = 5.0              # Glycerol 3-phosphate dehydrogenase
+TPI = 69.5                 # Triose-phosphate isomerase (= FBA - GLY3PDH)
+GAPD_PGK = 168.5           # GAPD + PGK (= FBA + TPI + TKT/TALA g3p)
+PGM = 168.5                # Phosphoglycerate mutase
+PYK = 168.5                # Pyruvate kinase
+pyr_drain = 68.5           # Pyruvate export
+LDH = 100.0                # Lactate formation
+
+# Oxidative pentose phosphate pathway
+G6PDH2r_PGL = 74.5         # Glucose-6-phosphate dehydrogenase (= PFK)
+GND = 74.5                 # 6-Phosphogluconate dehydrogenase
+RPI = 25.5                 # Ribose-5-phosphate isomerase (= TKT half flux + r5p_drain)
+RPE = 49.0                 # Ribulose-5-phosphate epimerase (= X5P_EC2)
+r5p_drain = 1.0            # R5P for biomass
+
+# Non-oxidative pentose phosphate pathway: transketolase/transaldolase half
+# reactions via the enzyme-bound EC2 (2-carbon) and EC3 (3-carbon) carriers.
+# Net fluxes follow from the EC2/EC3 pool balances, where the overall reactions
+# carry 24.5 each:
+#   X5P_EC2 =  TKT1 + TKT2   S7P_EC2 = -TKT1   F6P_EC2 = -TKT2
+#   S7P_EC3 =  TALA          F6P_EC3 = -TALA
+# A negative value means the half reaction runs backwards relative to how it is
+# written in reactions.tsv, which is why its deltaG is positive.
+X5P_EC2 = 49.0             # xu5p -> EC2 + g3p
+F6P_EC2 = -24.5            # f6p -> EC2 + e4p (runs in reverse)
+S7P_EC2 = -24.5            # s7p -> EC2 + r5p (runs in reverse)
+F6P_EC3 = -24.5            # f6p -> EC3 + g3p (runs in reverse)
+S7P_EC3 = 24.5             # s7p -> EC3 + e4p

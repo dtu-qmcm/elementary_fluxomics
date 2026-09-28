@@ -36,6 +36,7 @@ COLOR_ORDER = ["No Labeling", "Steady-State", "Instationary"]
 METABOLITE_COLORS = {
     "g6p":  cm.batlow(0.10),
     "f6p":  cm.batlow(0.38),
+    "fdp":  cm.batlow(0.24),  # fills the g6p/f6p gap; not in METABOLITES below
     "dhap": cm.batlow(0.60),
     "g3p":  cm.batlow(0.80),
     "r5p":  cm.batlow(0.92),

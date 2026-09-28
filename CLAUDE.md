@@ -135,6 +135,20 @@ rest follow from stoichiometry. `INITIAL_FLUXES_MMOL`
 (`scripts/fit_mechanistic_vs_aggregated.py`) and `TRUE_NET_FLUXES_MMOL`
 (`scripts/plot_flux_error_heatmaps.py`) duplicate these values and must stay in sync.
 
+#### High-oxPPP Flux Map (PFK/oxPPP split 50/50)
+
+Both model directories also contain `glycolysis_fluxes_high_oxppp.toml`, which also
+closes exactly. Its independent fluxes are `glc_uptake` (100), `r5p_drain` (1),
+`GLY3PDH` (5) and `LDH` (100), plus the constraint `PFK` = `G6PDH2r_PGL`. The oxPPP
+returns its carbon to f6p/g3p through the non-oxidative PPP, so
+PFK = GPI + ⅔(G6PDH − r5p_drain). With equal fluxes this gives
+PFK = G6PDH2r_PGL = 74.5, GPI = 25.5 and TKT1 = TKT2 = TALA = 24.5. Every reaction keeps
+its baseline direction.
+
+`scripts/gibbs_high_oxppp_comparison_ne.py` (`build_fluxes`) flips any ΔG whose sign
+agrees with its net flux (ΔG = −sign(v_net)·|ΔG|) and prints the flipped reactions. This
+is a safeguard for flux maps that reverse a reaction; none are flipped for this map.
+
 ## Gibbs Energy Analysis Scripts
 
 Scripts for analyzing how Gibbs energy parameters affect isotope labeling patterns using INST (isotopically non-stationary) simulations.
@@ -152,6 +166,8 @@ Scripts for analyzing how Gibbs energy parameters affect isotope labeling patter
 | `gibbs_landscape_2d.py` | 2D scan of FBA1 vs FBA2 Gibbs energies (30x30 grid) | `results/gibbs_landscape_2d/` |
 | `gibbs_confidence_contours.py` | Likelihood-ratio confidence contours via rotating-ray + optimistix root-finding (parallelized) | `results/gibbs_confidence_contours/` |
 | `gibbs_timecourse_chisquared.py` | Chi-squared evolution over time for different FBA1/FBA2 combinations | `results/gibbs_timecourse/` |
+| `gibbs_high_oxppp_comparison_ne.py` | Mechanistic (20:80 FBA1:FBA2 dG split) vs aggregated MID differences on the high-oxPPP flux map, NE thermodynamics, INST + SS. Unlike the other scripts, it uses **1,6-¹³C glucose** (`"100001"`) and also measures **fdp** (`fdp_123456`) | `results/gibbs_high_oxppp_ne/` |
+| `gibbs_high_oxppp_fit_ne.py` | freeflux SS + INST fits of the mechanistic high-oxPPP MIDs with the mechanistic (self-fit) and aggregated models; χ², flux and ΔG recovery | `results/gibbs_high_oxppp_fit_ne/` |
 | `gibbs_comparison_1d.py` | Compare mechanistic vs non-mechanistic models (batlow colors, separate final plot) | `results/gibbs_comparison_1d/` |
 | `gibbs_comparison_fba1_fixed.py` | 1D scan: FBA1 fixed at -3.0, FBA2 varies -5 to -1 (with timecourse) | `results/gibbs_comparison_fba1_fixed/` |
 | `gibbs_comparison_fba2_fixed.py` | 1D scan: FBA2 fixed at -2.0, FBA1 varies -5 to -1 (with timecourse) | `results/gibbs_comparison_fba2_fixed/` |
@@ -182,6 +198,55 @@ Scripts for analyzing how Gibbs energy parameters affect isotope labeling patter
 - `confidence_contours.png/pdf` - Per-case grid of contours (one panel per equilibrium × sim_mode)
 - `confidence_contours_overlay.png/pdf` - Single square near-equilibrium panel overlaying INST (blue) and SS (salmon) regions; confidence intervals encoded by saturation, reference point as a black cross
 
+**gibbs_high_oxppp_ne/** (high-oxPPP flux map, mechanistic vs aggregated):
+- `mid_differences_ss.csv` - Per metabolite × isotopologue: `mid_agg`, `mid_mech`, `diff` (= mech − agg)
+- `mid_differences_inst.csv` - Same, per timepoint
+- `mech_vs_agg_differences.png/pdf` - SS signed ΔMID bars per isotopologue (left); INST max |ΔMID| vs time (right)
+- `inst_isotopologue_differences.png/pdf` - Per-metabolite signed ΔMID of each isotopologue vs time
+
+**gibbs_high_oxppp_fit_ne/** (freeflux fits of the mechanistic high-oxPPP MIDs; `--fluxes standard` writes the same files to **gibbs_standard_fit_ne/**):
+- `fit_summary.csv` - Per (sim_mode, model): SSR, dof, 95% χ² range, `accepted` (SSR ≤ upper bound), best start
+- `fitted_fluxes.csv` - Per reaction: true/fitted net flux (mmol/gDCW/h), % error, true/fitted ΔG, `identifiable`
+- `mdv_residuals.csv` - Per measured isotopologue: measured, fitted, (fitted − measured)/sd
+- `start_objectives.csv` - SSR of every (randomised) start
+- `fit_flux_errors.png/pdf` - Net flux % error per reaction (SS | INST, aggregated vs mechanistic)
+- `fit_gibbs_errors.png/pdf` - ΔG % error, (fit − true)/true × 100, of the near-equilibrium reactions only (|ΔG_true| < 2 kJ/mol; far from equilibrium the backward flux barely affects labeling, so ΔG is not identifiable). A positive error puts the reaction further from equilibrium. Bars beyond ±200% are clipped and labelled with their value
+- `fit_mdv_residuals.png/pdf` - Normalized MDV residuals grouped by EMU
+
+### High-oxPPP Fits (`gibbs_high_oxppp_fit_ne.py`)
+
+Fits the noise-free mechanistic MIDs from `gibbs_high_oxppp_comparison_ne.py` (it imports
+that script's setup, including `build_fluxes`, `run_simulation` and `pool_size`) with
+freeflux's SS and INST fitters, using both the mechanistic model (self-fit) and the
+aggregated model.
+
+- **Measurements**: MDV sd = 0.002 (0.2 mol%). INST uses 5 timepoints, `logspace(-3, 1, 5)`.
+  Measured fluxes are `glc_input` (sd 1%), `r5p_drain` and `GLY3PDH`, the dhap drain
+  (sd 5%). INST pool sizes are pinned at their simulated values.
+- **Seeded start (important)**: freeflux only accepts initial *net* fluxes and fills in
+  exchange fluxes by a minimum-norm projection. For near-equilibrium INST this fails:
+  starting even from the true net fluxes, the mechanistic self-fit stalls at SSR ≈ 10⁴.
+  Every start therefore uses `seeded_start(u)` with `u = pinv(N)·v_total`, which
+  temporarily wraps freeflux's `build_initial_*` methods. No start sits at the reference
+  point, since that would trivially be the best solution. Every start uses
+  `perturb_fluxes`, which scales every true net and exchange flux (min(v_f, v_b)) by
+  U(0.5, 1.5) and projects the net fluxes back onto the steady state.
+- **Starts and parallelism**: 100 starts per (mode, model) fit (`--starts`). They are split
+  into worker tasks (`STARTS_PER_TASK`: 2 INST or 10 SS starts each) that run in a spawn
+  `ProcessPoolExecutor`. The default `--workers` is all CPUs but two, with one BLAS thread
+  per worker. Each start seeds its own RNG with `[RNG_SEED, start]`, so results do not
+  depend on the chunking. `merge_chunks` keeps the best start and every start's SSR.
+- **χ²**: freeflux's `chi2_test()` only prints, so the script computes the range from
+  `result.dof`. Noise-free data gives an SSR below the lower bound for a correct model.
+- **Identifiability**: LDH and pyr_drain have identical atom mapping and neither is
+  measured, so only their sum is identifiable. They are plotted as one combined row.
+
+```bash
+uv run python scripts/gibbs_high_oxppp_fit_ne.py                   # high-oxPPP map, 100 starts per fit on 30 workers
+uv run python scripts/gibbs_high_oxppp_fit_ne.py --fluxes standard  # standard glycolysis_fluxes.toml -> results/gibbs_standard_fit_ne/
+uv run python scripts/gibbs_high_oxppp_fit_ne.py --plot-only        # regenerate plots from the saved CSVs (combine with --fluxes)
+```
+
 ### Confidence Contours (`gibbs_confidence_contours.py`)
 
 Instead of a brute-force grid (`gibbs_landscape_2d.py`, which it does **not** replace), this traces the likelihood-ratio confidence boundary directly. From the known true point it casts rays at `N_ANGLES` angles and, per significance level `alpha`, solves for the distance `d` where the LR statistic crosses `chi2.ppf(1 - alpha, df=2)` using `optimistix.Bisection` (the freeflux objective is wrapped in `jax.pure_callback`).
@@ -206,6 +271,7 @@ uv run python scripts/gibbs_timecourse_chisquared.py
 uv run python scripts/gibbs_comparison_1d.py
 uv run python scripts/gibbs_comparison_fba1_fixed.py
 uv run python scripts/gibbs_comparison_fba2_fixed.py
+uv run python scripts/gibbs_high_oxppp_comparison_ne.py  # ~15 s (4 simulations)
 ```
 
 ### Key Functions (shared pattern)
