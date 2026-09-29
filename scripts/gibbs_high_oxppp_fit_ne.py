@@ -3,10 +3,9 @@
 
 Generates noise-free MIDs from the mechanistic model with the setup of
 gibbs_high_oxppp_comparison_ne.py (NE thermodynamics, FBA dG split, tracer and
-measured EMUs) on either the high-oxPPP flux map (default) or the standard one
-(--fluxes standard), and fits them with freeflux's SS and INST fitters using
-both the mechanistic model (self-fit, the control) and the aggregated model
-(single lumped FBA).
+measured EMUs) on the standard flux map (glycolysis_fluxes.toml), and fits them
+with freeflux's SS and INST fitters using both the mechanistic model (self-fit,
+the control) and the aggregated model (single lumped FBA).
 
 Measurements:
   - MIDs: sd = 0.002 (0.2 mol%) on every isotopologue; INST MIDs at 5
@@ -69,21 +68,10 @@ apply_style()
 SCRIPT_DIR = Path(__file__).parent
 PROJECT_DIR = SCRIPT_DIR.parent
 
-# Flux maps (file in each model directory) selectable with --fluxes
-FLUX_MAPS = {
-    "high_oxppp": "glycolysis_fluxes_high_oxppp.toml",
-    "standard": "glycolysis_fluxes.toml",
-}
-DEFAULT_FLUX_MAP = "high_oxppp"
+RESULTS_DIR = PROJECT_DIR / "results" / "gibbs_standard_fit_ne"
 
-
-def results_dir(flux_map):
-    """Output directory for a flux map, e.g. results/gibbs_standard_fit_ne."""
-    return PROJECT_DIR / "results" / f"gibbs_{flux_map}_fit_ne"
-
-
-# Set from --fluxes in main()
-RESULTS_DIR = results_dir(DEFAULT_FLUX_MAP)
+# Flux map (file in each model directory) that generates and seeds the fits
+FLUX_FILE = "glycolysis_fluxes.toml"
 
 # INST measurement times: 5 points logarithmically spaced from 1e-3s to 1e1s
 INST_TIMEPOINTS = list(np.logspace(-3, 1, 5))
@@ -107,7 +95,7 @@ NET_FLUX_BOUNDS = [0.0, 200.0]
 POOL_TOL = 1e-3
 
 # Optimizer settings per fitting mode
-N_STARTS = 100
+N_STARTS = 500
 
 # Starts per worker task: INST starts take minutes each, SS starts seconds
 STARTS_PER_TASK = {"ss": 10, "inst": 2}
@@ -160,7 +148,7 @@ MODEL_COLORS = {
 # ============================================================================
 
 
-def simulate_data(flux_file):
+def simulate_data():
     """Noise-free mechanistic MDVs: {"ss": {emu: mdv}, "inst": {emu: {t: mdv}}}."""
     model_dir, overrides = FIT_MODELS["mechanistic"]
     mdvs_tc, mdvs_ss, _ = run_simulation(
@@ -168,7 +156,7 @@ def simulate_data(flux_file):
         "glycolysis_mech_gly3p",
         overrides,
         timepoints=INST_TIMEPOINTS,
-        flux_file=flux_file,
+        flux_file=FLUX_FILE,
     )
     mdvs_tc = {
         emu_id: {t: mdv for t, mdv in by_t.items() if t > 0}
@@ -300,21 +288,21 @@ def fit_model(job):
     """Fit one model to one data set from a chunk of starts (worker process).
 
     Args:
-        job: Tuple of (mode, model_label, data, flux_file, start_ids) with data
-            in the format of simulate_data()[mode].
+        job: Tuple of (mode, model_label, data, start_ids) with data in the
+            format of simulate_data()[mode].
 
     Returns:
         dict with the true and fitted fluxes, fit statistics, per-start
         objectives and MDV residuals of the chunk's best start (fit fields are
         None if every start in the chunk failed).
     """
-    mode, model_label, data, flux_file, start_ids = job
+    mode, model_label, data, start_ids = job
     model_dir, overrides = FIT_MODELS[model_label]
     tag = f"[{mode}/{model_label}]"
 
     model = Model(f"{model_label}_{mode}")
     model.read_from_file(str(model_dir / "reactions.tsv"))
-    true_total, _ = build_fluxes(model, model_dir, overrides, flux_file)
+    true_total, _ = build_fluxes(model, model_dir, overrides, FLUX_FILE)
     true_net = net_from_total(true_total)
 
     with model.fitter(mode) as fitter, tempfile.TemporaryDirectory() as tmp:
@@ -765,13 +753,6 @@ def main():
         help="Regenerate plots from the saved CSVs without refitting.",
     )
     parser.add_argument(
-        "--fluxes",
-        choices=FLUX_MAPS,
-        default=DEFAULT_FLUX_MAP,
-        help="Flux map that generates and seeds the fits (results go to "
-        "results/gibbs_<fluxes>_fit_ne/).",
-    )
-    parser.add_argument(
         "--starts",
         type=int,
         default=N_STARTS,
@@ -785,12 +766,8 @@ def main():
     )
     args = parser.parse_args()
 
-    global RESULTS_DIR
-    RESULTS_DIR = results_dir(args.fluxes)
-    flux_file = FLUX_MAPS[args.fluxes]
-
     print("=" * 80)
-    print(f"Fit ({args.fluxes} fluxes): Mechanistic vs Aggregated Model (NE Thermodynamics)")
+    print("Fit (standard fluxes): Mechanistic vs Aggregated Model (NE Thermodynamics)")
     print("=" * 80)
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     print(f"Output directory: {RESULTS_DIR}")
@@ -800,7 +777,7 @@ def main():
         df_summary, df_fluxes, df_residuals, _ = load_results()
     else:
         print(f"\nConfiguration:")
-        print(f"  Flux map: {flux_file}")
+        print(f"  Flux map: {FLUX_FILE}")
         print(f"  Data: mechanistic model, FBA1 = {FBA1_DG:.3f}, FBA2 = {FBA2_DG:.3f} kJ/mol")
         print(f"  MDV sd: {MDV_SD} on every isotopologue")
         print(f"  INST timepoints: {[f'{t:g}' for t in INST_TIMEPOINTS]} s")
@@ -813,7 +790,7 @@ def main():
 
         print("\nSimulating mechanistic data...")
         sys.stdout.flush()
-        data = simulate_data(flux_file)
+        data = simulate_data()
 
         jobs = []
         for mode in ("inst", "ss"):  # INST tasks first: they are the slow ones
@@ -821,7 +798,7 @@ def main():
             for model in FIT_MODELS:
                 for i in range(0, args.starts, chunk):
                     start_ids = list(range(i, min(i + chunk, args.starts)))
-                    jobs.append((mode, model, data[mode], flux_file, start_ids))
+                    jobs.append((mode, model, data[mode], start_ids))
         print(f"Fitting {len(MODES) * len(FIT_MODELS)} (mode, model) combinations "
               f"as {len(jobs)} tasks on {args.workers} workers...")
         sys.stdout.flush()
