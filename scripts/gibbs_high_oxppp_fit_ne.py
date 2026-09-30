@@ -890,60 +890,52 @@ def plot_split_heatmaps(flux_tables):
         save_figure(fig, RESULTS_DIR, f"heatmap_{stem}")
 
 
-def plot_split_lines(df, column, ylabel, stem, sharey=True, bound=None):
-    """Line plot of one summary column against the FBA1 split.
+SPLIT_XLABEL = r"FBA1 fraction of $\Delta_r G_{FBA}$"
 
-    One panel per mode, one line per model; df also goes to <stem>.csv.
 
-    Args:
-        df: Table with fba1_fraction, sim_mode, model and column.
-        column: Column to plot.
-        ylabel: y-axis label.
-        stem: Output file stem in RESULTS_DIR.
-        sharey: Share the y-axis between the mode panels.
-        bound: Optional (column, label): drawn dashed in each model's color.
-    """
+def save_split_table(df, stem):
+    """Write a table of per-split values to <stem>.csv in RESULTS_DIR."""
     path = RESULTS_DIR / f"{stem}.csv"
     df.to_csv(path, index=False)
     print(f"  Saved CSV: {path}")
 
+
+def plot_split_panel(ax, df, mode, column, bound=None):
+    """One line per model of df's column against the FBA1 split, for one mode.
+
+    Args:
+        ax: Axes to draw on.
+        df: Table with fba1_fraction, sim_mode, model and column.
+        mode: Fitting mode to plot.
+        column: Column to plot.
+        bound: Optional column drawn dashed in each model's color.
+    """
     fractions = sorted(df["fba1_fraction"].unique())
-    fig, axes = plt.subplots(
-        1, len(MODES), figsize=(DOUBLE_COL, DOUBLE_COL * 0.34), sharey=sharey
-    )
-    for ax, mode in zip(axes, MODES):
-        for model in MODELS:
-            data = df[(df["sim_mode"] == mode) & (df["model"] == model)]
+    for model in MODELS:
+        data = df[(df["sim_mode"] == mode) & (df["model"] == model)]
+        ax.plot(
+            data["fba1_fraction"], data[column], "o-", color=MODEL_COLORS[model], label=model,
+        )
+        if bound:
             ax.plot(
-                data["fba1_fraction"], data[column], "o-",
-                color=MODEL_COLORS[model], label=model,
+                data["fba1_fraction"], data[bound], "--",
+                color=MODEL_COLORS[model], linewidth=0.8,
             )
-            if bound:
-                ax.plot(
-                    data["fba1_fraction"], data[bound[0]], "--",
-                    color=MODEL_COLORS[model], linewidth=0.8,
-                )
-        ax.set_xticks(fractions)
-        ax.set_xticklabels([f"{f:g}" for f in fractions])
-        ax.set_xlabel(r"FBA1 fraction of $\Delta_r G_{FBA}$")
-        ax.set_title(MODE_TITLES[mode])
-        ax.set_ylim(bottom=0)
-    axes[0].set_ylabel(ylabel)
+    ax.set_xticks(fractions)
+    ax.set_xticklabels([f"{f:g}" for f in fractions])
 
-    handles, labels = axes[0].get_legend_handles_labels()
-    if bound:
+
+def split_legend(fig, ax, bound_label=None):
+    """Model legend below the figure, with a gray dashed entry for a bound."""
+    handles, labels = ax.get_legend_handles_labels()
+    if bound_label:
         handles.append(plt.Line2D([], [], color="gray", linestyle="--", linewidth=0.8))
-        labels.append(bound[1])
-    fig.legend(handles, labels, loc="lower center", ncol=len(handles))
-    fig.tight_layout(rect=(0, 0.08, 1, 1))
-    save_figure(fig, RESULTS_DIR, stem)
+        labels.append(bound_label)
+    fig.legend(handles, labels, loc="outside lower center", ncol=len(handles))
 
 
-def plot_ssr(summaries):
-    """Best SSR of each fit against the FBA1 split, with its chi2 upper bound.
-
-    The mode panels have their own y-axes (INST SSRs are far larger). The
-    fit summaries of all splits are also written to ssr.csv.
+def ssr_table(summaries):
+    """Fit summaries of all splits in one table, with an fba1_fraction column.
 
     Args:
         summaries: {fba1_fraction: fit_summary table of that split}.
@@ -951,18 +943,11 @@ def plot_ssr(summaries):
     df = pd.concat(
         [summaries[f].assign(fba1_fraction=f) for f in sorted(summaries)], ignore_index=True
     )
-    df = df[["fba1_fraction"] + [c for c in df.columns if c != "fba1_fraction"]]
-    plot_split_lines(
-        df, "SSR", "SSR", "ssr", sharey=False,
-        bound=("chi2_upper", rf"{CHI2_CONFIDENCE:.0%} $\chi^2$ upper bound"),
-    )
+    return df[["fba1_fraction"] + [c for c in df.columns if c != "fba1_fraction"]]
 
 
-def plot_max_flux_errors(flux_tables):
-    """Largest absolute net flux % error of each fit against the FBA1 split.
-
-    The values, with the reaction that has the largest error, are also written
-    to max_flux_errors.csv.
+def max_flux_error_table(flux_tables):
+    """Largest absolute net flux % error of each fit, and its reaction, per split.
 
     Args:
         flux_tables: {fba1_fraction: fitted_fluxes table of that split}.
@@ -979,9 +964,42 @@ def plot_max_flux_errors(flux_tables):
             "pct_error": errors[rxn_id],
             "max_abs_pct_error": abs(errors[rxn_id]),
         })
-    plot_split_lines(
-        pd.DataFrame(rows), "max_abs_pct_error", "Max |net flux error| (%)", "max_flux_errors"
-    )
+    return pd.DataFrame(rows)
+
+
+def plot_ssr_flux_errors(summaries, flux_tables):
+    """Best SSR (left) and largest absolute net flux % error (right) of each fit
+    against the FBA1 split, one row per mode.
+
+    The SSR panels show each model's chi2 upper bound dashed. Every panel has
+    its own y-axis (INST SSRs are far larger). The fit summaries of all splits
+    go to ssr.csv, and the largest errors, with their reactions, to
+    max_flux_errors.csv.
+
+    Args:
+        summaries: {fba1_fraction: fit_summary table of that split}.
+        flux_tables: {fba1_fraction: fitted_fluxes table of that split}.
+    """
+    df_ssr = ssr_table(summaries)
+    df_flux = max_flux_error_table(flux_tables)
+    save_split_table(df_ssr, "ssr")
+    save_split_table(df_flux, "max_flux_errors")
+
+    fig = plt.figure(figsize=(DOUBLE_COL, DOUBLE_COL * 0.62), layout="constrained")
+    for i, (subfig, mode) in enumerate(zip(fig.subfigures(len(MODES), 1), MODES)):
+        ax_ssr, ax_flux = subfig.subplots(1, 2)
+        plot_split_panel(ax_ssr, df_ssr, mode, "SSR", bound="chi2_upper")
+        plot_split_panel(ax_flux, df_flux, mode, "max_abs_pct_error")
+        ax_ssr.set_ylabel("SSR")
+        ax_flux.set_ylabel("Max |net flux error| (%)")
+        for ax in (ax_ssr, ax_flux):
+            ax.set_ylim(bottom=0)
+            if i == len(MODES) - 1:
+                ax.set_xlabel(SPLIT_XLABEL)
+        subfig.suptitle(MODE_TITLES[mode], fontsize=plt.rcParams["axes.titlesize"])
+
+    split_legend(fig, ax_ssr, rf"{CHI2_CONFIDENCE:.0%} $\chi^2$ upper bound")
+    save_figure(fig, RESULTS_DIR, "ssr_flux_errors")
 
 
 def plot_mean_gibbs_errors(flux_tables):
@@ -1007,10 +1025,22 @@ def plot_mean_gibbs_errors(flux_tables):
             "n_clipped": int((errors > ERROR_CLIP_PCT).sum()),
             "mean_abs_pct_error": np.minimum(errors, ERROR_CLIP_PCT).mean(),
         })
-    plot_split_lines(
-        pd.DataFrame(rows), "mean_abs_pct_error", r"Mean |$\Delta_r G$ error| (%)",
-        "mean_gibbs_errors",
+    df = pd.DataFrame(rows)
+    save_split_table(df, "mean_gibbs_errors")
+
+    fig, axes = plt.subplots(
+        1, len(MODES), figsize=(DOUBLE_COL, DOUBLE_COL * 0.34), sharey=True,
+        layout="constrained",
     )
+    for ax, mode in zip(axes, MODES):
+        plot_split_panel(ax, df, mode, "mean_abs_pct_error")
+        ax.set_xlabel(SPLIT_XLABEL)
+        ax.set_title(MODE_TITLES[mode])
+    # After every panel is drawn: set_ylim freezes the shared autoscaled top
+    axes[0].set_ylim(bottom=0)
+    axes[0].set_ylabel(r"Mean |$\Delta_r G$ error| (%)")
+    split_legend(fig, axes[0])
+    save_figure(fig, RESULTS_DIR, "mean_gibbs_errors")
 
 
 def print_summary(df_summary, df_fluxes):
@@ -1106,12 +1136,10 @@ def main():
 
     print("\nCreating split heatmaps...")
     plot_split_heatmaps(flux_tables)
-    print("Creating max flux error plot...")
-    plot_max_flux_errors(flux_tables)
+    print("Creating SSR and max flux error plot...")
+    plot_ssr_flux_errors(summaries, flux_tables)
     print("Creating mean Gibbs energy error plot...")
     plot_mean_gibbs_errors(flux_tables)
-    print("Creating SSR plot...")
-    plot_ssr(summaries)
 
 
 if __name__ == "__main__":

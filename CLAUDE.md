@@ -207,12 +207,11 @@ Scripts for analyzing how Gibbs energy parameters affect isotope labeling patter
 **gibbs_standard_fit_ne/** (freeflux fits of the mechanistic MIDs on the standard flux map, from `gibbs_high_oxppp_fit_ne.py`):
 - `heatmap_flux_errors.png/pdf` - Net flux % error across the splits: one panel per (mode, model), rows are reactions, columns FBA1 fractions. Clipped to ±15% (`FLUX_CLIP_PCT`; net fluxes are recovered to within ~10%), clipped cells labelled with their value, hatched cells are reactions the model lacks
 - `heatmap_gibbs_errors.png/pdf` - Same for the ΔG % error of the near-equilibrium reactions, clipped to ±200% (`ERROR_CLIP_PCT`)
-- `max_flux_errors.png/pdf` - Largest absolute net flux % error of each fit vs the FBA1 fraction (one panel per mode, one line per model)
+- `ssr_flux_errors.png/pdf` - Best SSR (left) and largest absolute net flux % error (right) of each fit vs the FBA1 fraction, one line per model; one row per mode, titled "Steady state" and "Instationary". The SSR panels show each model's 95% χ² upper bound dashed. Every panel has its own y-axis
+- `ssr.csv` - The `fit_summary.csv` rows of every split, with an `fba1_fraction` column
 - `max_flux_errors.csv` - Per (split, sim_mode, model): the reaction with the largest error, its signed % error and the absolute value
 - `mean_gibbs_errors.png/pdf` - Mean absolute ΔG % error of each fit vs the FBA1 fraction, over the near-equilibrium reactions of the ΔG heatmap. Each error is clipped to ±200% (`ERROR_CLIP_PCT`) before averaging, since one ∞ or thousands-% error would otherwise dominate the mean
 - `mean_gibbs_errors.csv` - Per (split, sim_mode, model): number of reactions averaged, number clipped, and the mean
-- `ssr.png/pdf` - Best SSR of each fit vs the FBA1 fraction, with each model's 95% χ² upper bound dashed; SS and INST panels have their own y-axes
-- `ssr.csv` - The `fit_summary.csv` rows of every split, with an `fba1_fraction` column
 - `fba1_<fraction>/` - One directory per split (`fba1_0.1` … `fba1_0.9`) with:
   - `fit_summary.csv` - Per (sim_mode, model): SSR, dof, 95% χ² range, `accepted` (SSR ≤ upper bound), best start
   - `fitted_fluxes.csv` - Per reaction: true/fitted net flux (mmol/gDCW/h), % error, true/fitted ΔG, `identifiable`
