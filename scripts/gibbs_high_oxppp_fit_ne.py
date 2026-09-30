@@ -2,10 +2,14 @@
 """Fit Mechanistic MIDs with the Mechanistic and Aggregated Models.
 
 Generates noise-free MIDs from the mechanistic model with the setup of
-gibbs_high_oxppp_comparison_ne.py (NE thermodynamics, FBA dG split, tracer and
-measured EMUs) on the standard flux map (glycolysis_fluxes.toml), and fits them
-with freeflux's SS and INST fitters using both the mechanistic model (self-fit,
-the control) and the aggregated model (single lumped FBA).
+gibbs_high_oxppp_comparison_ne.py (NE thermodynamics, tracer and measured EMUs)
+on the standard flux map (glycolysis_fluxes.toml), and fits them with
+freeflux's SS and INST fitters using both the mechanistic model (self-fit, the
+control) and the aggregated model (single lumped FBA).
+
+The analysis is repeated for 5 splits of the FBA dG between FBA1 and FBA2
+(FBA1 fraction linspace(0.1, 0.9, 5)). Each split's results go to their own
+subdirectory, and heatmaps compare the flux and dG errors across the splits.
 
 Measurements:
   - MIDs: sd = 0.002 (0.2 mol%) on every isotopologue; INST MIDs at 5
@@ -25,9 +29,11 @@ is measured, so only their sum is identifiable.
 """
 
 import argparse
+from collections import Counter, defaultdict
 import contextlib
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import io
+from itertools import product
 import multiprocessing as mp
 import os
 from pathlib import Path
@@ -36,6 +42,7 @@ import tempfile
 import time
 
 import cmcrameri.cm as cmc
+from matplotlib.patches import Rectangle
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -47,7 +54,6 @@ from scipy.stats import chi2
 from gibbs_high_oxppp_comparison_ne import (
     AGG_MODEL_DIR,
     CONVERSION_FACTOR,
-    FBA1_FRACTION,
     LABELING_PATTERN,
     MECH_MODEL_DIR,
     TARGET_EMUS,
@@ -122,18 +128,19 @@ NON_IDENTIFIABLE = ("LDH", "pyr_drain")
 # the deltaG is not identifiable
 GIBBS_PLOT_MAX_ABS_DG = 2.0
 
-# deltaG % errors beyond +-this are drawn clipped, labelled with their value
-GIBBS_PLOT_CLIP_PCT = 200.0
+# % errors beyond +-this are drawn clipped (deltaG bars and heatmap cells),
+# labelled with their value
+ERROR_CLIP_PCT = 200.0
 
-FBA1_DG = FBA1_FRACTION * TOTAL_FBA_DG
-FBA2_DG = (1 - FBA1_FRACTION) * TOTAL_FBA_DG
+# Tighter clip of the net flux error heatmap: net fluxes are recovered to
+# within ~10%, which a +-200% scale would wash out
+FLUX_CLIP_PCT = 15.0
 
-# Fitted models: label -> (model directory, deltaG overrides defining its truth)
-FIT_MODELS = {
-    "aggregated": (AGG_MODEL_DIR, {"FBA": TOTAL_FBA_DG}),
-    "mechanistic": (MECH_MODEL_DIR, {"FBA1": FBA1_DG, "FBA2": FBA2_DG}),
-}
+# Fraction of the total FBA dG assigned to FBA1 in the mechanistic data (FBA2
+# takes the rest); each split is a separate analysis
+FBA1_FRACTIONS = [round(f, 2) for f in np.linspace(0.1, 0.9, 5)]
 
+MODELS = ("aggregated", "mechanistic")
 MODES = ("ss", "inst")
 MODE_TITLES = {"ss": "Steady state", "inst": "Instationary"}
 
@@ -148,9 +155,28 @@ MODEL_COLORS = {
 # ============================================================================
 
 
-def simulate_data():
+def fit_models(fba1_fraction):
+    """Fitted models: label -> (model directory, deltaG overrides defining its truth)."""
+    return {
+        "aggregated": (AGG_MODEL_DIR, {"FBA": TOTAL_FBA_DG}),
+        "mechanistic": (
+            MECH_MODEL_DIR,
+            {
+                "FBA1": fba1_fraction * TOTAL_FBA_DG,
+                "FBA2": (1 - fba1_fraction) * TOTAL_FBA_DG,
+            },
+        ),
+    }
+
+
+def split_dir(fba1_fraction):
+    """Output directory of one split, e.g. RESULTS_DIR/fba1_0.3."""
+    return RESULTS_DIR / f"fba1_{fba1_fraction:g}"
+
+
+def simulate_data(fba1_fraction):
     """Noise-free mechanistic MDVs: {"ss": {emu: mdv}, "inst": {emu: {t: mdv}}}."""
-    model_dir, overrides = FIT_MODELS["mechanistic"]
+    model_dir, overrides = fit_models(fba1_fraction)["mechanistic"]
     mdvs_tc, mdvs_ss, _ = run_simulation(
         model_dir,
         "glycolysis_mech_gly3p",
@@ -178,12 +204,19 @@ def net_from_total(total_fluxes):
 
 
 def gibbs_from_total(total_fluxes):
-    """deltaG = -RT ln(v_f / v_b) for every reversible reaction (kJ/mol)."""
+    """deltaG = -RT ln(v_f / v_b) for every reversible reaction (kJ/mol).
+
+    Fitted fluxes can come out slightly negative; they are treated as zero, so
+    a reaction whose backward (forward) flux vanishes gets deltaG = -inf (+inf).
+    """
     with np.errstate(divide="ignore", invalid="ignore"):
         return {
             flux_id[:-2]: float(
                 -R * TEMPERATURE
-                * np.log(total_fluxes[flux_id] / total_fluxes[f"{flux_id[:-2]}_b"])
+                * np.log(
+                    np.maximum(total_fluxes[flux_id], 0.0)
+                    / np.maximum(total_fluxes[f"{flux_id[:-2]}_b"], 0.0)
+                )
             )
             for flux_id in total_fluxes
             if flux_id.endswith("_f")
@@ -288,17 +321,17 @@ def fit_model(job):
     """Fit one model to one data set from a chunk of starts (worker process).
 
     Args:
-        job: Tuple of (mode, model_label, data, start_ids) with data in the
-            format of simulate_data()[mode].
+        job: Tuple of (fba1_fraction, mode, model_label, data, start_ids) with
+            data in the format of simulate_data()[mode].
 
     Returns:
         dict with the true and fitted fluxes, fit statistics, per-start
         objectives and MDV residuals of the chunk's best start (fit fields are
         None if every start in the chunk failed).
     """
-    mode, model_label, data, start_ids = job
-    model_dir, overrides = FIT_MODELS[model_label]
-    tag = f"[{mode}/{model_label}]"
+    fba1_fraction, mode, model_label, data, start_ids = job
+    model_dir, overrides = fit_models(fba1_fraction)[model_label]
+    tag = f"[fba1 {fba1_fraction:g} {mode}/{model_label}]"
 
     model = Model(f"{model_label}_{mode}")
     model.read_from_file(str(model_dir / "reactions.tsv"))
@@ -435,7 +468,7 @@ def merge_chunks(chunks):
     fit, with the per-start objectives of every chunk."""
     fits = []
     for mode in MODES:
-        for model in FIT_MODELS:
+        for model in MODELS:
             group = [c for c in chunks if c["mode"] == mode and c["model"] == model]
             finite = [c for c in group if np.isfinite(c["SSR"])]
             if not finite:
@@ -444,6 +477,54 @@ def merge_chunks(chunks):
             starts = sorted((s for c in group for s in c["starts"]), key=lambda s: s["start"])
             fits.append({**best, "starts": starts})
     return fits
+
+
+def run_fits(fba1_fractions, n_starts, n_workers):
+    """Fit both models in both modes for every split.
+
+    The tasks of all splits share one worker pool, so a split's slowest starts
+    overlap with the next split's fits. Each split is saved as soon as its last
+    task finishes.
+    """
+    jobs = []
+    for fba1_fraction in fba1_fractions:
+        print(f"Simulating mechanistic data (FBA1 fraction {fba1_fraction:g})...")
+        sys.stdout.flush()
+        data = simulate_data(fba1_fraction)
+        for mode in ("inst", "ss"):  # INST tasks first: they are the slow ones
+            chunk = STARTS_PER_TASK[mode]
+            for model in MODELS:
+                for i in range(0, n_starts, chunk):
+                    start_ids = list(range(i, min(i + chunk, n_starts)))
+                    jobs.append((fba1_fraction, mode, model, data[mode], start_ids))
+    print(
+        f"Fitting {len(fba1_fractions)} splits x {len(MODES) * len(MODELS)} (mode, model) "
+        f"combinations as {len(jobs)} tasks on {n_workers} workers..."
+    )
+    sys.stdout.flush()
+
+    remaining = Counter(job[0] for job in jobs)
+    chunks = defaultdict(list)
+
+    def collect(fba1_fraction, chunk):
+        chunks[fba1_fraction].append(chunk)
+        remaining[fba1_fraction] -= 1
+        if remaining[fba1_fraction] == 0:
+            print(f"\nSaving results (FBA1 fraction {fba1_fraction:g})")
+            save_results(merge_chunks(chunks.pop(fba1_fraction)), split_dir(fba1_fraction))
+
+    if n_workers > 1:
+        # One BLAS thread per worker so the processes do not oversubscribe the CPUs
+        for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+            os.environ.setdefault(var, "1")
+        ctx = mp.get_context("spawn")
+        with ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as pool:
+            futures = {pool.submit(fit_model, job): job[0] for job in jobs}
+            for future in as_completed(futures):
+                collect(futures[future], future.result())
+    else:
+        for job in jobs:
+            collect(job[0], fit_model(job))
 
 
 # ============================================================================
@@ -496,8 +577,11 @@ def flux_rows(fit):
     return rows
 
 
-def save_results(fits):
-    """Write the fit CSVs and return (summary, fluxes, residuals, starts)."""
+RESULT_TABLES = ("fit_summary", "fitted_fluxes", "mdv_residuals", "start_objectives")
+
+
+def save_results(fits, out_dir):
+    """Write the fit CSVs of one split to out_dir."""
     df_summary = pd.DataFrame([summary_row(fit) for fit in fits])
     df_fluxes = pd.DataFrame([row for fit in fits for row in flux_rows(fit)])
     df_residuals = pd.DataFrame([
@@ -511,25 +595,17 @@ def save_results(fits):
         for row in fit["starts"]
     ])
 
-    for name, df in [
-        ("fit_summary", df_summary),
-        ("fitted_fluxes", df_fluxes),
-        ("mdv_residuals", df_residuals),
-        ("start_objectives", df_starts),
-    ]:
-        path = RESULTS_DIR / f"{name}.csv"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for name, df in zip(RESULT_TABLES, (df_summary, df_fluxes, df_residuals, df_starts)):
+        path = out_dir / f"{name}.csv"
         df.to_csv(path, index=False)
         print(f"  Saved CSV: {path}")
     sys.stdout.flush()
-    return df_summary, df_fluxes, df_residuals, df_starts
 
 
-def load_results():
+def load_results(out_dir):
     """Read the fit CSVs written by save_results()."""
-    return tuple(
-        pd.read_csv(RESULTS_DIR / f"{name}.csv")
-        for name in ("fit_summary", "fitted_fluxes", "mdv_residuals", "start_objectives")
-    )
+    return tuple(pd.read_csv(out_dir / f"{name}.csv") for name in RESULT_TABLES)
 
 
 # ============================================================================
@@ -537,10 +613,10 @@ def load_results():
 # ============================================================================
 
 
-def save_figure(fig, stem):
-    """Save a figure as PNG and PDF in RESULTS_DIR."""
+def save_figure(fig, out_dir, stem):
+    """Save a figure as PNG and PDF in out_dir."""
     for ext in ("png", "pdf"):
-        path = RESULTS_DIR / f"{stem}.{ext}"
+        path = out_dir / f"{stem}.{ext}"
         fig.savefig(path)
         print(f"  Saved: {path}")
     sys.stdout.flush()
@@ -566,12 +642,55 @@ def flux_error_table(df_fluxes, mode, model):
     return errors
 
 
-def plot_panels(stem, row_values, xlabel, title_suffix=None, rows=None, clip=None):
+def gibbs_error_table(df_fluxes, mode, model):
+    """% deltaG error per near-equilibrium reaction.
+
+    Error = (fitted - true) / true * 100, so a positive error means the fit puts
+    the reaction further from equilibrium than it is.
+    """
+    data = df_fluxes[(df_fluxes["sim_mode"] == mode) & (df_fluxes["model"] == model)]
+    data = data[data["reversible"] & (data["true_dG"].abs() < GIBBS_PLOT_MAX_ABS_DG)]
+    pct_error = (data["fitted_dG"] - data["true_dG"]) / data["true_dG"] * 100
+    return dict(zip(data["rxn_id"], pct_error))
+
+
+def flux_error_rows(df_fluxes):
+    """Row order of the flux error plots: the aggregated reaction order."""
+    return list(flux_error_table(df_fluxes, MODES[0], "aggregated"))
+
+
+def gibbs_error_rows(df_fluxes):
+    """Row order of the deltaG error plots: the aggregated reaction order, with
+    the mechanistic FBA1/FBA2 right after FBA."""
+    rows = []
+    for rxn_id in gibbs_error_table(df_fluxes, MODES[0], "aggregated"):
+        rows.extend(["FBA", "FBA1", "FBA2"] if rxn_id == "FBA" else [rxn_id])
+    return rows
+
+
+# Error measures: stem -> (axis label, error table, row order, heatmap clip in %)
+MEASURES = {
+    "flux_errors": ("Net flux error (%)", flux_error_table, flux_error_rows, FLUX_CLIP_PCT),
+    "gibbs_errors": (
+        r"$\Delta_r G$ error (%)", gibbs_error_table, gibbs_error_rows, ERROR_CLIP_PCT,
+    ),
+}
+
+
+def format_pct(value):
+    """Compact label of a clipped % error, e.g. 850, -1.2k or inf."""
+    if np.isinf(value):
+        return "∞" if value > 0 else "−∞"
+    return f"{value / 1000:.1f}k" if abs(value) >= 1000 else f"{value:.0f}"
+
+
+def plot_panels(out_dir, stem, row_values, xlabel, title_suffix=None, rows=None, clip=None):
     """Grouped horizontal bars (one bar per model) in one panel per mode.
 
     Each bar also gets a dot at its value, so that zero errors stay visible.
 
     Args:
+        out_dir: Output directory.
         stem: Output file stem.
         row_values: {mode: {model: {row_label: value}}}.
         xlabel: x-axis label.
@@ -589,14 +708,14 @@ def plot_panels(stem, row_values, xlabel, title_suffix=None, rows=None, clip=Non
     fig, axes = plt.subplots(
         1, len(MODES), figsize=(DOUBLE_COL, 0.16 * len(rows) + 1.4), sharey=True
     )
-    height = 0.8 / len(FIT_MODELS)
+    height = 0.8 / len(MODELS)
     y = np.arange(len(rows))
 
     for ax, mode in zip(axes, MODES):
-        for i, model in enumerate(FIT_MODELS):
+        for i, model in enumerate(MODELS):
             values = np.array([row_values[mode][model].get(r, np.nan) for r in rows])
             shown = np.clip(values, -clip, clip) if clip else values
-            y_model = y + (i - (len(FIT_MODELS) - 1) / 2) * height
+            y_model = y + (i - (len(MODELS) - 1) / 2) * height
             ax.barh(y_model, shown, height=height, color=MODEL_COLORS[model], label=model)
             ax.plot(shown, y_model, "o", markersize=2.5, color=MODEL_COLORS[model])
             if clip:
@@ -618,9 +737,9 @@ def plot_panels(stem, row_values, xlabel, title_suffix=None, rows=None, clip=Non
     axes[0].invert_yaxis()
 
     handles, labels = axes[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="lower center", ncol=len(FIT_MODELS))
+    fig.legend(handles, labels, loc="lower center", ncol=len(MODELS))
     fig.tight_layout(rect=(0, 0.05, 1, 1))
-    save_figure(fig, stem)
+    save_figure(fig, out_dir, stem)
 
 
 def ssr_labels(df_summary):
@@ -628,7 +747,7 @@ def ssr_labels(df_summary):
     labels = {}
     for mode in MODES:
         parts = []
-        for model in FIT_MODELS:
+        for model in MODELS:
             row = df_summary[(df_summary["sim_mode"] == mode) & (df_summary["model"] == model)].iloc[0]
             verdict = "accepted" if row["accepted"] else "rejected"
             parts.append(f"{model}: SSR {row['SSR']:.3g}, {verdict}")
@@ -636,56 +755,42 @@ def ssr_labels(df_summary):
     return labels
 
 
-def plot_flux_errors(df_summary, df_fluxes):
+def plot_flux_errors(df_summary, df_fluxes, out_dir):
     """% error of the fitted net fluxes."""
     values = {
-        mode: {model: flux_error_table(df_fluxes, mode, model) for model in FIT_MODELS}
+        mode: {model: flux_error_table(df_fluxes, mode, model) for model in MODELS}
         for mode in MODES
     }
-    plot_panels("fit_flux_errors", values, "Net flux error (%)", ssr_labels(df_summary))
+    plot_panels(out_dir, "fit_flux_errors", values, "Net flux error (%)", ssr_labels(df_summary))
 
 
-def plot_gibbs_errors(df_summary, df_fluxes):
-    """% error of the fitted Gibbs energies of the near-equilibrium reactions.
-
-    Error = (fitted - true) / true * 100, so a positive error means the fit puts
-    the reaction further from equilibrium than it is.
-    """
-    near_eq = df_fluxes[
-        df_fluxes["reversible"] & (df_fluxes["true_dG"].abs() < GIBBS_PLOT_MAX_ABS_DG)
-    ]
-    values = {}
-    for mode in MODES:
-        values[mode] = {}
-        for model in FIT_MODELS:
-            data = near_eq[(near_eq["sim_mode"] == mode) & (near_eq["model"] == model)]
-            pct_error = (data["fitted_dG"] - data["true_dG"]) / data["true_dG"] * 100
-            values[mode][model] = dict(zip(data["rxn_id"], pct_error))
-
-    # Aggregated reaction order, with the mechanistic FBA1/FBA2 right after FBA
-    rows = []
-    for rxn_id in dict.fromkeys(near_eq.loc[near_eq["model"] == "aggregated", "rxn_id"]):
-        rows.extend(["FBA", "FBA1", "FBA2"] if rxn_id == "FBA" else [rxn_id])
+def plot_gibbs_errors(df_summary, df_fluxes, out_dir):
+    """% error of the fitted Gibbs energies of the near-equilibrium reactions."""
+    values = {
+        mode: {model: gibbs_error_table(df_fluxes, mode, model) for model in MODELS}
+        for mode in MODES
+    }
     plot_panels(
+        out_dir,
         "fit_gibbs_errors",
         values,
         r"$\Delta_r G$ error (%)",
         ssr_labels(df_summary),
-        rows=rows,
-        clip=GIBBS_PLOT_CLIP_PCT,
+        rows=gibbs_error_rows(df_fluxes),
+        clip=ERROR_CLIP_PCT,
     )
 
 
-def plot_mdv_residuals(df_residuals):
+def plot_mdv_residuals(df_residuals, out_dir):
     """Normalized MDV residuals at the optimum, grouped by EMU."""
     emus = [f"{met}_{atoms[0]}" for met, atoms in TARGET_EMUS.items()]
     fig, axes = plt.subplots(
         1, len(MODES), figsize=(DOUBLE_COL, DOUBLE_COL * 0.38), sharey=True
     )
-    offset = 0.35 / len(FIT_MODELS)
+    offset = 0.35 / len(MODELS)
 
     for ax, mode in zip(axes, MODES):
-        for i, model in enumerate(FIT_MODELS):
+        for i, model in enumerate(MODELS):
             data = df_residuals[
                 (df_residuals["sim_mode"] == mode) & (df_residuals["model"] == model)
             ]
@@ -693,7 +798,7 @@ def plot_mdv_residuals(df_residuals):
             # Spread the points of one EMU so the isotopologues stay visible
             spread = (data["isotopologue"] / 6.0 - 0.5) * 0.12
             ax.scatter(
-                x + (i - (len(FIT_MODELS) - 1) / 2) * 2 * offset + spread,
+                x + (i - (len(MODELS) - 1) / 2) * 2 * offset + spread,
                 data["norm_residual"],
                 s=6,
                 color=MODEL_COLORS[model],
@@ -709,17 +814,203 @@ def plot_mdv_residuals(df_residuals):
     axes[0].set_ylabel("(fitted $-$ measured) / sd")
     axes[-1].legend(loc="best")
     fig.tight_layout()
-    save_figure(fig, "fit_mdv_residuals")
+    save_figure(fig, out_dir, "fit_mdv_residuals")
 
 
-def make_plots(df_summary, df_fluxes, df_residuals):
-    """Create all figures from the result tables."""
+def make_plots(df_summary, df_fluxes, df_residuals, out_dir):
+    """Create the figures of one split from its result tables."""
     print("\n  Creating flux error plot...")
-    plot_flux_errors(df_summary, df_fluxes)
+    plot_flux_errors(df_summary, df_fluxes, out_dir)
     print("  Creating Gibbs energy error plot...")
-    plot_gibbs_errors(df_summary, df_fluxes)
+    plot_gibbs_errors(df_summary, df_fluxes, out_dir)
     print("  Creating MDV residual plot...")
-    plot_mdv_residuals(df_residuals)
+    plot_mdv_residuals(df_residuals, out_dir)
+
+
+def plot_split_heatmaps(flux_tables):
+    """Heatmaps of the % errors across the FBA1 splits, one figure per measure.
+
+    Each figure has one panel per (mode, model); rows are reactions, columns
+    splits. Errors are clipped to the measure's bound (MEASURES), and clipped
+    cells are labelled with their value. Hatched cells are reactions the model
+    lacks.
+
+    Args:
+        flux_tables: {fba1_fraction: fitted_fluxes table of that split}.
+    """
+    fractions = sorted(flux_tables)
+    panels = list(product(MODES, MODELS))
+    cmap = cmc.vik.copy()
+    cmap.set_bad("white")
+
+    for stem, (label, error_table, row_order, clip) in MEASURES.items():
+        rows = row_order(flux_tables[fractions[0]])
+        fig, axes = plt.subplots(
+            1,
+            len(panels),
+            figsize=(DOUBLE_COL, 0.15 * len(rows) + 1.3),
+            sharey=True,
+            layout="constrained",
+        )
+        for ax, (mode, model) in zip(axes, panels):
+            errors = {f: error_table(flux_tables[f], mode, model) for f in fractions}
+            values = np.array([[errors[f].get(r, np.nan) for f in fractions] for r in rows])
+            image = ax.imshow(
+                np.clip(values, -clip, clip),
+                cmap=cmap,
+                vmin=-clip,
+                vmax=clip,
+                aspect="auto",
+                interpolation="nearest",
+            )
+            for (i, j), v in np.ndenumerate(values):
+                if np.isnan(v):
+                    ax.add_patch(Rectangle(
+                        (j - 0.5, i - 0.5), 1, 1, fill=False, hatch="////",
+                        edgecolor="0.75", linewidth=0,
+                    ))
+                elif abs(v) > clip:
+                    ax.text(j, i, format_pct(v), ha="center", va="center", fontsize=6, color="white")
+
+            # Thin white gaps between cells
+            ax.set_xticks(np.arange(len(fractions) + 1) - 0.5, minor=True)
+            ax.set_yticks(np.arange(len(rows) + 1) - 0.5, minor=True)
+            ax.grid(which="minor", color="white", linewidth=0.8)
+            ax.tick_params(which="both", length=0)
+            ax.spines[:].set_visible(False)
+
+            ax.set_xticks(range(len(fractions)))
+            ax.set_xticklabels([f"{f:g}" for f in fractions])
+            ax.set_title(f"{MODE_TITLES[mode]}\n{model}", fontsize=8)
+
+        axes[0].set_yticks(range(len(rows)))
+        axes[0].set_yticklabels(rows)
+        fig.supxlabel(r"FBA1 fraction of $\Delta_r G_{FBA}$", fontsize=8)
+        fig.colorbar(image, ax=axes, extend="both", label=label, shrink=0.8, aspect=30)
+        save_figure(fig, RESULTS_DIR, f"heatmap_{stem}")
+
+
+def plot_split_lines(df, column, ylabel, stem, sharey=True, bound=None):
+    """Line plot of one summary column against the FBA1 split.
+
+    One panel per mode, one line per model; df also goes to <stem>.csv.
+
+    Args:
+        df: Table with fba1_fraction, sim_mode, model and column.
+        column: Column to plot.
+        ylabel: y-axis label.
+        stem: Output file stem in RESULTS_DIR.
+        sharey: Share the y-axis between the mode panels.
+        bound: Optional (column, label): drawn dashed in each model's color.
+    """
+    path = RESULTS_DIR / f"{stem}.csv"
+    df.to_csv(path, index=False)
+    print(f"  Saved CSV: {path}")
+
+    fractions = sorted(df["fba1_fraction"].unique())
+    fig, axes = plt.subplots(
+        1, len(MODES), figsize=(DOUBLE_COL, DOUBLE_COL * 0.34), sharey=sharey
+    )
+    for ax, mode in zip(axes, MODES):
+        for model in MODELS:
+            data = df[(df["sim_mode"] == mode) & (df["model"] == model)]
+            ax.plot(
+                data["fba1_fraction"], data[column], "o-",
+                color=MODEL_COLORS[model], label=model,
+            )
+            if bound:
+                ax.plot(
+                    data["fba1_fraction"], data[bound[0]], "--",
+                    color=MODEL_COLORS[model], linewidth=0.8,
+                )
+        ax.set_xticks(fractions)
+        ax.set_xticklabels([f"{f:g}" for f in fractions])
+        ax.set_xlabel(r"FBA1 fraction of $\Delta_r G_{FBA}$")
+        ax.set_title(MODE_TITLES[mode])
+        ax.set_ylim(bottom=0)
+    axes[0].set_ylabel(ylabel)
+
+    handles, labels = axes[0].get_legend_handles_labels()
+    if bound:
+        handles.append(plt.Line2D([], [], color="gray", linestyle="--", linewidth=0.8))
+        labels.append(bound[1])
+    fig.legend(handles, labels, loc="lower center", ncol=len(handles))
+    fig.tight_layout(rect=(0, 0.08, 1, 1))
+    save_figure(fig, RESULTS_DIR, stem)
+
+
+def plot_ssr(summaries):
+    """Best SSR of each fit against the FBA1 split, with its chi2 upper bound.
+
+    The mode panels have their own y-axes (INST SSRs are far larger). The
+    fit summaries of all splits are also written to ssr.csv.
+
+    Args:
+        summaries: {fba1_fraction: fit_summary table of that split}.
+    """
+    df = pd.concat(
+        [summaries[f].assign(fba1_fraction=f) for f in sorted(summaries)], ignore_index=True
+    )
+    df = df[["fba1_fraction"] + [c for c in df.columns if c != "fba1_fraction"]]
+    plot_split_lines(
+        df, "SSR", "SSR", "ssr", sharey=False,
+        bound=("chi2_upper", rf"{CHI2_CONFIDENCE:.0%} $\chi^2$ upper bound"),
+    )
+
+
+def plot_max_flux_errors(flux_tables):
+    """Largest absolute net flux % error of each fit against the FBA1 split.
+
+    The values, with the reaction that has the largest error, are also written
+    to max_flux_errors.csv.
+
+    Args:
+        flux_tables: {fba1_fraction: fitted_fluxes table of that split}.
+    """
+    rows = []
+    for f, mode, model in product(sorted(flux_tables), MODES, MODELS):
+        errors = flux_error_table(flux_tables[f], mode, model)
+        rxn_id = max(errors, key=lambda r: abs(errors[r]))
+        rows.append({
+            "fba1_fraction": f,
+            "sim_mode": mode,
+            "model": model,
+            "rxn_id": rxn_id,
+            "pct_error": errors[rxn_id],
+            "max_abs_pct_error": abs(errors[rxn_id]),
+        })
+    plot_split_lines(
+        pd.DataFrame(rows), "max_abs_pct_error", "Max |net flux error| (%)", "max_flux_errors"
+    )
+
+
+def plot_mean_gibbs_errors(flux_tables):
+    """Mean absolute deltaG % error of each fit against the FBA1 split.
+
+    Averages over the near-equilibrium reactions of the deltaG heatmap, each
+    error first clipped to +-ERROR_CLIP_PCT as in the heatmap: otherwise a
+    single infinite or thousands-% error would dominate the mean. The values,
+    with the number of clipped reactions, are also written to
+    mean_gibbs_errors.csv.
+
+    Args:
+        flux_tables: {fba1_fraction: fitted_fluxes table of that split}.
+    """
+    rows = []
+    for f, mode, model in product(sorted(flux_tables), MODES, MODELS):
+        errors = np.abs(list(gibbs_error_table(flux_tables[f], mode, model).values()))
+        rows.append({
+            "fba1_fraction": f,
+            "sim_mode": mode,
+            "model": model,
+            "n_reactions": len(errors),
+            "n_clipped": int((errors > ERROR_CLIP_PCT).sum()),
+            "mean_abs_pct_error": np.minimum(errors, ERROR_CLIP_PCT).mean(),
+        })
+    plot_split_lines(
+        pd.DataFrame(rows), "mean_abs_pct_error", r"Mean |$\Delta_r G$ error| (%)",
+        "mean_gibbs_errors",
+    )
 
 
 def print_summary(df_summary, df_fluxes):
@@ -745,12 +1036,20 @@ def print_summary(df_summary, df_fluxes):
 
 
 def main():
-    """Fit both models to the mechanistic MIDs in SS and INST mode."""
+    """Fit both models to the mechanistic MIDs of every split in SS and INST mode."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--plot-only",
         action="store_true",
         help="Regenerate plots from the saved CSVs without refitting.",
+    )
+    parser.add_argument(
+        "--splits",
+        type=float,
+        nargs="+",
+        default=FBA1_FRACTIONS,
+        help="FBA1 fractions of the FBA dG to analyse (default: "
+        f"{' '.join(f'{f:g}' for f in FBA1_FRACTIONS)}).",
     )
     parser.add_argument(
         "--starts",
@@ -773,12 +1072,15 @@ def main():
     print(f"Output directory: {RESULTS_DIR}")
     sys.stdout.flush()
 
-    if args.plot_only:
-        df_summary, df_fluxes, df_residuals, _ = load_results()
-    else:
+    if not args.plot_only:
         print(f"\nConfiguration:")
         print(f"  Flux map: {FLUX_FILE}")
-        print(f"  Data: mechanistic model, FBA1 = {FBA1_DG:.3f}, FBA2 = {FBA2_DG:.3f} kJ/mol")
+        print(f"  Data: mechanistic model, FBA dG = {TOTAL_FBA_DG:.3f} kJ/mol split as")
+        for f in args.splits:
+            print(
+                f"    FBA1 fraction {f:g}: FBA1 = {f * TOTAL_FBA_DG:.3f}, "
+                f"FBA2 = {(1 - f) * TOTAL_FBA_DG:.3f} kJ/mol"
+            )
         print(f"  MDV sd: {MDV_SD} on every isotopologue")
         print(f"  INST timepoints: {[f'{t:g}' for t in INST_TIMEPOINTS]} s")
         print(f"  Measured fluxes (sd fraction): {MEASURED_FLUX_SD_FRAC}")
@@ -787,39 +1089,29 @@ def main():
             f"scaled by U({1 - PERTURB:g}, {1 + PERTURB:g})"
         )
         sys.stdout.flush()
+        run_fits(args.splits, args.starts, args.workers)
 
-        print("\nSimulating mechanistic data...")
-        sys.stdout.flush()
-        data = simulate_data()
-
-        jobs = []
-        for mode in ("inst", "ss"):  # INST tasks first: they are the slow ones
-            chunk = STARTS_PER_TASK[mode]
-            for model in FIT_MODELS:
-                for i in range(0, args.starts, chunk):
-                    start_ids = list(range(i, min(i + chunk, args.starts)))
-                    jobs.append((mode, model, data[mode], start_ids))
-        print(f"Fitting {len(MODES) * len(FIT_MODELS)} (mode, model) combinations "
-              f"as {len(jobs)} tasks on {args.workers} workers...")
-        sys.stdout.flush()
-        if args.workers > 1:
-            # One BLAS thread per worker so the processes do not oversubscribe the CPUs
-            for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
-                os.environ.setdefault(var, "1")
-            ctx = mp.get_context("spawn")
-            with ProcessPoolExecutor(max_workers=args.workers, mp_context=ctx) as pool:
-                chunks = list(pool.map(fit_model, jobs))
-        else:
-            chunks = [fit_model(job) for job in jobs]
-        fits = merge_chunks(chunks)
-
+    flux_tables = {}
+    summaries = {}
+    for fba1_fraction in args.splits:
         print("\n" + "=" * 80)
-        print("Saving Results")
+        print(f"FBA1 fraction {fba1_fraction:g}")
         print("=" * 80)
-        df_summary, df_fluxes, df_residuals, _ = save_results(fits)
+        out_dir = split_dir(fba1_fraction)
+        df_summary, df_fluxes, df_residuals, _ = load_results(out_dir)
+        make_plots(df_summary, df_fluxes, df_residuals, out_dir)
+        print_summary(df_summary, df_fluxes)
+        flux_tables[fba1_fraction] = df_fluxes
+        summaries[fba1_fraction] = df_summary
 
-    make_plots(df_summary, df_fluxes, df_residuals)
-    print_summary(df_summary, df_fluxes)
+    print("\nCreating split heatmaps...")
+    plot_split_heatmaps(flux_tables)
+    print("Creating max flux error plot...")
+    plot_max_flux_errors(flux_tables)
+    print("Creating mean Gibbs energy error plot...")
+    plot_mean_gibbs_errors(flux_tables)
+    print("Creating SSR plot...")
+    plot_ssr(summaries)
 
 
 if __name__ == "__main__":

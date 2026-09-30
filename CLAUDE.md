@@ -167,7 +167,7 @@ Scripts for analyzing how Gibbs energy parameters affect isotope labeling patter
 | `gibbs_confidence_contours.py` | Likelihood-ratio confidence contours via rotating-ray + optimistix root-finding (parallelized) | `results/gibbs_confidence_contours/` |
 | `gibbs_timecourse_chisquared.py` | Chi-squared evolution over time for different FBA1/FBA2 combinations | `results/gibbs_timecourse/` |
 | `gibbs_high_oxppp_comparison_ne.py` | Mechanistic (20:80 FBA1:FBA2 dG split) vs aggregated MID differences on the high-oxPPP flux map, NE thermodynamics, INST + SS. Unlike the other scripts, it uses **1,6-¹³C glucose** (`"100001"`) and also measures **fdp** (`fdp_123456`) | `results/gibbs_high_oxppp_ne/` |
-| `gibbs_high_oxppp_fit_ne.py` | freeflux SS + INST fits of the mechanistic MIDs on the standard flux map with the mechanistic (self-fit) and aggregated models; χ², flux and ΔG recovery | `results/gibbs_standard_fit_ne/` |
+| `gibbs_high_oxppp_fit_ne.py` | freeflux SS + INST fits of the mechanistic MIDs on the standard flux map with the mechanistic (self-fit) and aggregated models, for 5 FBA1:FBA2 ΔG splits; χ², flux and ΔG recovery | `results/gibbs_standard_fit_ne/` |
 | `gibbs_comparison_1d.py` | Compare mechanistic vs non-mechanistic models (batlow colors, separate final plot) | `results/gibbs_comparison_1d/` |
 | `gibbs_comparison_fba1_fixed.py` | 1D scan: FBA1 fixed at -3.0, FBA2 varies -5 to -1 (with timecourse) | `results/gibbs_comparison_fba1_fixed/` |
 | `gibbs_comparison_fba2_fixed.py` | 1D scan: FBA2 fixed at -2.0, FBA1 varies -5 to -1 (with timecourse) | `results/gibbs_comparison_fba2_fixed/` |
@@ -205,13 +205,25 @@ Scripts for analyzing how Gibbs energy parameters affect isotope labeling patter
 - `inst_isotopologue_differences.png/pdf` - Per-metabolite signed ΔMID of each isotopologue vs time
 
 **gibbs_standard_fit_ne/** (freeflux fits of the mechanistic MIDs on the standard flux map, from `gibbs_high_oxppp_fit_ne.py`):
-- `fit_summary.csv` - Per (sim_mode, model): SSR, dof, 95% χ² range, `accepted` (SSR ≤ upper bound), best start
-- `fitted_fluxes.csv` - Per reaction: true/fitted net flux (mmol/gDCW/h), % error, true/fitted ΔG, `identifiable`
-- `mdv_residuals.csv` - Per measured isotopologue: measured, fitted, (fitted − measured)/sd
-- `start_objectives.csv` - SSR of every (randomised) start
-- `fit_flux_errors.png/pdf` - Net flux % error per reaction (SS | INST, aggregated vs mechanistic)
-- `fit_gibbs_errors.png/pdf` - ΔG % error, (fit − true)/true × 100, of the near-equilibrium reactions only (|ΔG_true| < 2 kJ/mol; far from equilibrium the backward flux barely affects labeling, so ΔG is not identifiable). A positive error puts the reaction further from equilibrium. Bars beyond ±200% are clipped and labelled with their value
-- `fit_mdv_residuals.png/pdf` - Normalized MDV residuals grouped by EMU
+- `heatmap_flux_errors.png/pdf` - Net flux % error across the splits: one panel per (mode, model), rows are reactions, columns FBA1 fractions. Clipped to ±15% (`FLUX_CLIP_PCT`; net fluxes are recovered to within ~10%), clipped cells labelled with their value, hatched cells are reactions the model lacks
+- `heatmap_gibbs_errors.png/pdf` - Same for the ΔG % error of the near-equilibrium reactions, clipped to ±200% (`ERROR_CLIP_PCT`)
+- `max_flux_errors.png/pdf` - Largest absolute net flux % error of each fit vs the FBA1 fraction (one panel per mode, one line per model)
+- `max_flux_errors.csv` - Per (split, sim_mode, model): the reaction with the largest error, its signed % error and the absolute value
+- `mean_gibbs_errors.png/pdf` - Mean absolute ΔG % error of each fit vs the FBA1 fraction, over the near-equilibrium reactions of the ΔG heatmap. Each error is clipped to ±200% (`ERROR_CLIP_PCT`) before averaging, since one ∞ or thousands-% error would otherwise dominate the mean
+- `mean_gibbs_errors.csv` - Per (split, sim_mode, model): number of reactions averaged, number clipped, and the mean
+- `ssr.png/pdf` - Best SSR of each fit vs the FBA1 fraction, with each model's 95% χ² upper bound dashed; SS and INST panels have their own y-axes
+- `ssr.csv` - The `fit_summary.csv` rows of every split, with an `fba1_fraction` column
+- `fba1_<fraction>/` - One directory per split (`fba1_0.1` … `fba1_0.9`) with:
+  - `fit_summary.csv` - Per (sim_mode, model): SSR, dof, 95% χ² range, `accepted` (SSR ≤ upper bound), best start
+  - `fitted_fluxes.csv` - Per reaction: true/fitted net flux (mmol/gDCW/h), % error, true/fitted ΔG, `identifiable`
+  - `mdv_residuals.csv` - Per measured isotopologue: measured, fitted, (fitted − measured)/sd
+  - `start_objectives.csv` - SSR of every (randomised) start
+  - `fit_flux_errors.png/pdf` - Net flux % error per reaction (SS | INST, aggregated vs mechanistic)
+  - `fit_gibbs_errors.png/pdf` - ΔG % error, (fit − true)/true × 100, of the near-equilibrium reactions only (|ΔG_true| < 2 kJ/mol; far from equilibrium the backward flux barely affects labeling, so ΔG is not identifiable). A positive error puts the reaction further from equilibrium. Bars beyond ±200% are clipped and labelled with their value
+  - `fit_mdv_residuals.png/pdf` - Normalized MDV residuals grouped by EMU
+
+Fitted ΔG is ±∞ where a fitted forward or backward flux is 0 (slightly negative
+fitted fluxes are treated as 0), so its % error is ±∞ and shows as a clipped cell/bar.
 
 ### Standard-Flux Fits (`gibbs_high_oxppp_fit_ne.py`)
 
@@ -219,9 +231,12 @@ Fits noise-free mechanistic MIDs, simulated on the standard flux map
 (`glycolysis_fluxes.toml`, `FLUX_FILE`), with freeflux's SS and INST fitters, using both
 the mechanistic model (self-fit) and the aggregated model. Despite its name, the script no
 longer uses the high-oxPPP map; it imports the rest of its setup (`build_fluxes`,
-`run_simulation`, `pool_size`, tracer, EMUs, FBA ΔG split) from
-`gibbs_high_oxppp_comparison_ne.py`.
+`run_simulation`, `pool_size`, tracer, EMUs) from `gibbs_high_oxppp_comparison_ne.py`.
 
+- **FBA ΔG splits**: the analysis runs once per FBA1 fraction in `FBA1_FRACTIONS`
+  (`linspace(0.1, 0.9, 5)`, `--splits`): FBA1 = fraction × ΔG_FBA and FBA2 = the rest,
+  with ΔG_FBA = −0.87 kJ/mol. Only the mechanistic data and self-fit change with the split;
+  the aggregated model's truth (FBA = −0.87) is the same for every split.
 - **Measurements**: MDV sd = 0.002 (0.2 mol%). INST uses 5 timepoints, `logspace(-3, 1, 5)`.
   Measured fluxes are `glc_input` (sd 1%), `r5p_drain` and `GLY3PDH`, the dhap drain
   (sd 5%). INST pool sizes are pinned at their simulated values.
@@ -233,9 +248,10 @@ longer uses the high-oxPPP map; it imports the rest of its setup (`build_fluxes`
   point, since that would trivially be the best solution. Every start uses
   `perturb_fluxes`, which scales every true net and exchange flux (min(v_f, v_b)) by
   U(0.5, 1.5) and projects the net fluxes back onto the steady state.
-- **Starts and parallelism**: 500 starts per (mode, model) fit (`--starts`). They are split
-  into worker tasks (`STARTS_PER_TASK`: 2 INST or 10 SS starts each) that run in a spawn
-  `ProcessPoolExecutor`. The default `--workers` is all CPUs but two, with one BLAS thread
+- **Starts and parallelism**: 500 starts per (split, mode, model) fit (`--starts`). They are
+  split into worker tasks (`STARTS_PER_TASK`: 2 INST or 10 SS starts each) that run in one
+  spawn `ProcessPoolExecutor` shared by all splits; each split is saved as soon as its last
+  task finishes (`run_fits`). The default `--workers` is all CPUs but two, with one BLAS thread
   per worker. Each start seeds its own RNG with `[RNG_SEED, start]`, so results do not
   depend on the chunking. `merge_chunks` keeps the best start and every start's SSR.
 - **χ²**: freeflux's `chi2_test()` only prints, so the script computes the range from
@@ -244,8 +260,9 @@ longer uses the high-oxPPP map; it imports the rest of its setup (`build_fluxes`
   measured, so only their sum is identifiable. They are plotted as one combined row.
 
 ```bash
-uv run python scripts/gibbs_high_oxppp_fit_ne.py              # standard map, 500 starts per fit on all CPUs but two
-uv run python scripts/gibbs_high_oxppp_fit_ne.py --plot-only  # regenerate plots from the saved CSVs
+uv run python scripts/gibbs_high_oxppp_fit_ne.py                  # 5 splits x 500 starts per fit on all CPUs but two (~4.5 h on 22 workers)
+uv run python scripts/gibbs_high_oxppp_fit_ne.py --splits 0.1 0.9  # a subset of splits
+uv run python scripts/gibbs_high_oxppp_fit_ne.py --plot-only       # regenerate plots and heatmaps from the saved CSVs
 ```
 
 ### Confidence Contours (`gibbs_confidence_contours.py`)
