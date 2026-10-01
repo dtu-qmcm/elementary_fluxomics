@@ -5,7 +5,7 @@ Simulates the aggregated (single FBA) and mechanistic (FBA1 + FBA2) glycolysis
 models on the high-oxPPP flux map (glycolysis_fluxes_high_oxppp.toml: PFK and
 the oxPPP split 50/50, PFK = G6PDH2r_PGL = 74.5% of glucose uptake) with the NE
 thermodynamics, and plots the MID differences between the two models for INST
-and SS labeling with 1,6-13C glucose.
+and SS labeling with 1,2-13C glucose.
 
 Reference: Aggregated model with FBA dG = -0.87 kJ/mol
 Test:      Mechanistic model with a 20/80 split, FBA1 = -0.174, FBA2 = -0.696 kJ/mol
@@ -58,8 +58,8 @@ CONVERSION_FACTOR = 1000 / 3600
 # EC2/EC3 carriers) are given a small pool rather than the bulk default.
 ENZYME_BOUND_METABOLITES = ("FBA_dhap", "EC2", "EC3")
 
-# Tracer: 1,6-13C glucose (carbons 1 and 6 labeled)
-LABELING_PATTERN = "100001"
+# Tracer: 1,2-13C glucose (carbons 1 and 2 labeled)
+LABELING_PATTERN = "110000"
 
 # Timepoints: 100 points logarithmically spaced from 1e-3s to 1e1s
 TIMEPOINTS = list(np.logspace(-3, 1, 100))

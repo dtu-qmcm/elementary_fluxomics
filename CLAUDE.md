@@ -166,7 +166,7 @@ Scripts for analyzing how Gibbs energy parameters affect isotope labeling patter
 | `gibbs_landscape_2d.py` | 2D scan of FBA1 vs FBA2 Gibbs energies (30x30 grid) | `results/gibbs_landscape_2d/` |
 | `gibbs_confidence_contours.py` | Likelihood-ratio confidence contours via rotating-ray + optimistix root-finding (parallelized) | `results/gibbs_confidence_contours/` |
 | `gibbs_timecourse_chisquared.py` | Chi-squared evolution over time for different FBA1/FBA2 combinations | `results/gibbs_timecourse/` |
-| `gibbs_high_oxppp_comparison_ne.py` | Mechanistic (20:80 FBA1:FBA2 dG split) vs aggregated MID differences on the high-oxPPP flux map, NE thermodynamics, INST + SS. Unlike the other scripts, it uses **1,6-¹³C glucose** (`"100001"`) and also measures **fdp** (`fdp_123456`) | `results/gibbs_high_oxppp_ne/` |
+| `gibbs_high_oxppp_comparison_ne.py` | Mechanistic (20:80 FBA1:FBA2 dG split) vs aggregated MID differences on the high-oxPPP flux map, NE thermodynamics, INST + SS. It uses **1,2-¹³C glucose** (`"110000"`, `LABELING_PATTERN`, also used by `gibbs_high_oxppp_fit_ne.py`) and, unlike the other scripts, also measures **fdp** (`fdp_123456`) | `results/gibbs_high_oxppp_ne/` |
 | `gibbs_high_oxppp_fit_ne.py` | freeflux SS + INST fits of the mechanistic MIDs on the standard flux map with the mechanistic (self-fit) and aggregated models, for 5 FBA1:FBA2 ΔG splits; χ², flux and ΔG recovery | `results/gibbs_standard_fit_ne/` |
 | `gibbs_comparison_1d.py` | Compare mechanistic vs non-mechanistic models (batlow colors, separate final plot) | `results/gibbs_comparison_1d/` |
 | `gibbs_comparison_fba1_fixed.py` | 1D scan: FBA1 fixed at -3.0, FBA2 varies -5 to -1 (with timecourse) | `results/gibbs_comparison_fba1_fixed/` |
