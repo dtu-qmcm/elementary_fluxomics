@@ -9,6 +9,30 @@ Don't co-author with Claude
 
 This repository contains ¹³C metabolic flux analysis (¹³C-MFA) simulations using the Elementary Metabolite Unit (EMU) algorithm. It models isotope labeling patterns in metabolic networks to estimate intracellular flux distributions.
 
+## Repository Layout
+
+Scripts are split into the seven sets behind the paper (`paper_scripts/`) and everything
+else (`other_scripts/`). Outputs follow the same split: `results/paper_scripts/<set>/` and
+`results/other_scripts/`. Figures a script writes go to a `figures/` subfolder next to its
+results. The top-level `figures/` holds only the hand-assembled (Inkscape) paper figures.
+See `paper_scripts/README.md` for the full map.
+
+| `paper_scripts/` set | Scripts | Results (`results/paper_scripts/...`) |
+|---|---|---|
+| `common/` | `style.py`, `emu_jax.py`, `enzyme_utils.py` (shared; also used by `other_scripts/` and `tests/`) | — |
+| `forward_simulations/` | `gibbs_fba_split_comparison.py` (FFE), `gibbs_fba_split_comparison_ne.py` (NE), `plot_ffe_ne_comparison.py` | `forward_simulations/` |
+| `confidence_contours/` | `gibbs_confidence_contours.py` | `confidence_contours/` |
+| `mcmc_7_params/` | `enzyme_simulation{,_instationary,_no_labeling}.py` (7 identifiable rate parameters), `plot_parameter_comparison_identifiable.py` | `mcmc_7_params/` |
+| `gibbs_landscape/` | `gibbs_landscape_2d.py`, `plot_landscape_combined.py` | `gibbs_landscape/` |
+| `mcmc_11_params/` | `enzyme_simulation{,_instationary,_no_labeling}.py` (all 11 rate parameters), `plot_parameter_comparison.py` | `mcmc_11_params/` |
+| `parameter_identifiability/` | `fisher_information.py` | `parameter_identifiability/` |
+| `standard_ne_fit/` | `gibbs_high_oxppp_fit_ne.py`, `gibbs_high_oxppp_comparison_ne.py` (supplies the fit's setup) | `standard_ne_fit/` |
+
+Scripts import across folders by inserting the folder into `sys.path`
+(e.g. `gibbs_confidence_contours.py` adds `paper_scripts/gibbs_landscape`, and every set
+adds `paper_scripts/common`). Paper scripts sit two levels below the repo root
+(`PROJECT_DIR = SCRIPT_DIR.parent.parent`); `other_scripts/` is flat, one level below.
+
 ## Commands
 
 ### Install dependencies
@@ -18,17 +42,17 @@ uv sync
 
 ### Run Gibbs energy analysis (most commonly used)
 ```bash
-uv run python scripts/gibbs_landscape_2d.py          # 2D FBA1/FBA2 landscape
-uv run python scripts/gibbs_comparison_1d.py         # Mechanistic vs non-mechanistic
-uv run python scripts/gibbs_comparison_fba1_fixed.py # FBA1 fixed, FBA2 varies
-uv run python scripts/gibbs_comparison_fba2_fixed.py # FBA2 fixed, FBA1 varies
+uv run python paper_scripts/gibbs_landscape/gibbs_landscape_2d.py          # 2D FBA1/FBA2 landscape
+uv run python other_scripts/gibbs_comparison_1d.py         # Mechanistic vs non-mechanistic
+uv run python other_scripts/gibbs_comparison_fba1_fixed.py # FBA1 fixed, FBA2 varies
+uv run python other_scripts/gibbs_comparison_fba2_fixed.py # FBA2 fixed, FBA1 varies
 ```
 
 ### Run enzyme simulation
 ```bash
-uv run python scripts/enzyme_simulation.py             # Steady-state with isotope labeling
-uv run python scripts/enzyme_simulation_instationary.py # Instationary isotope labeling
-uv run python scripts/enzyme_simulation_no_labeling.py  # No isotope labeling
+uv run python paper_scripts/mcmc_11_params/enzyme_simulation.py             # Steady-state with isotope labeling
+uv run python paper_scripts/mcmc_11_params/enzyme_simulation_instationary.py # Instationary isotope labeling
+uv run python paper_scripts/mcmc_11_params/enzyme_simulation_no_labeling.py  # No isotope labeling
 ```
 
 ### Run main script
@@ -121,7 +145,7 @@ flux** and, for thermodynamic consistency (`ΔG = −RT·ln(v_f/v_b)`), a **posi
   (far-from-equilibrium) or ±0.25 kJ/mol (near-equilibrium).
 - `freeflux` applies `set_flux_bounds` to **net** fluxes, so any fitting code must
   allow negative bounds for these three reactions. See `NEGATIVE_NET_RXNS` in
-  `scripts/fit_mechanistic_vs_aggregated.py`.
+  `other_scripts/fit_mechanistic_vs_aggregated.py`.
 
 `EC2`/`EC3` are enzyme-bound, so scripts that give `FBA_dhap` a small pool give them
 the same (see `ENZYME_BOUND_METABOLITES`).
@@ -132,8 +156,8 @@ The flux distributions in both `glycolysis_fluxes.toml` files close **exactly** 
 every internal metabolite. The independent fluxes are `glc_uptake` (100.0043),
 `G6PDH2r_PGL` (17.4529), `r5p_drain` (1.0), `GLY3PDH` (5.0) and `LDH` (100.0); the
 rest follow from stoichiometry. `INITIAL_FLUXES_MMOL`
-(`scripts/fit_mechanistic_vs_aggregated.py`) and `TRUE_NET_FLUXES_MMOL`
-(`scripts/plot_flux_error_heatmaps.py`) duplicate these values and must stay in sync.
+(`other_scripts/fit_mechanistic_vs_aggregated.py`) and `TRUE_NET_FLUXES_MMOL`
+(`other_scripts/plot_flux_error_heatmaps.py`) duplicate these values and must stay in sync.
 
 #### High-oxPPP Flux Map (PFK/oxPPP split 50/50)
 
@@ -145,7 +169,7 @@ PFK = GPI + ⅔(G6PDH − r5p_drain). With equal fluxes this gives
 PFK = G6PDH2r_PGL = 74.5, GPI = 25.5 and TKT1 = TKT2 = TALA = 24.5. Every reaction keeps
 its baseline direction.
 
-`scripts/gibbs_high_oxppp_comparison_ne.py` (`build_fluxes`) flips any ΔG whose sign
+`paper_scripts/standard_ne_fit/gibbs_high_oxppp_comparison_ne.py` (`build_fluxes`) flips any ΔG whose sign
 agrees with its net flux (ΔG = −sign(v_net)·|ΔG|) and prints the flipped reactions. This
 is a safeguard for flux maps that reverse a reaction; none are flipped for this map.
 
@@ -163,48 +187,50 @@ Scripts for analyzing how Gibbs energy parameters affect isotope labeling patter
 
 | Script | Description | Results Directory |
 |--------|-------------|-------------------|
-| `gibbs_landscape_2d.py` | 2D scan of FBA1 vs FBA2 Gibbs energies (30x30 grid) | `results/gibbs_landscape_2d/` |
-| `gibbs_confidence_contours.py` | Likelihood-ratio confidence contours via rotating-ray + optimistix root-finding (parallelized) | `results/gibbs_confidence_contours/` |
-| `gibbs_timecourse_chisquared.py` | Chi-squared evolution over time for different FBA1/FBA2 combinations | `results/gibbs_timecourse/` |
-| `gibbs_high_oxppp_comparison_ne.py` | Mechanistic (20:80 FBA1:FBA2 dG split) vs aggregated MID differences on the high-oxPPP flux map, NE thermodynamics, INST + SS. It uses **1,2-¹³C glucose** (`"110000"`, `LABELING_PATTERN`, also used by `gibbs_high_oxppp_fit_ne.py`) and, unlike the other scripts, also measures **fdp** (`fdp_123456`) | `results/gibbs_high_oxppp_ne/` |
-| `gibbs_high_oxppp_fit_ne.py` | freeflux SS + INST fits of the mechanistic MIDs on the standard flux map with the mechanistic (self-fit) and aggregated models, for 5 FBA1:FBA2 ΔG splits; χ², flux and ΔG recovery | `results/gibbs_standard_fit_ne/` |
-| `gibbs_comparison_1d.py` | Compare mechanistic vs non-mechanistic models (batlow colors, separate final plot) | `results/gibbs_comparison_1d/` |
-| `gibbs_comparison_fba1_fixed.py` | 1D scan: FBA1 fixed at -3.0, FBA2 varies -5 to -1 (with timecourse) | `results/gibbs_comparison_fba1_fixed/` |
-| `gibbs_comparison_fba2_fixed.py` | 1D scan: FBA2 fixed at -2.0, FBA1 varies -5 to -1 (with timecourse) | `results/gibbs_comparison_fba2_fixed/` |
+| `gibbs_landscape_2d.py` | 2D scan of FBA1 vs FBA2 Gibbs energies (30x30 grid) | `results/paper_scripts/gibbs_landscape/gibbs_landscape_2d_{ffe,ne}/` |
+| `gibbs_confidence_contours.py` | Likelihood-ratio confidence contours via rotating-ray + optimistix root-finding (parallelized) | `results/paper_scripts/confidence_contours/gibbs_confidence_contours/` |
+| `gibbs_timecourse_chisquared.py` | Chi-squared evolution over time for different FBA1/FBA2 combinations | `results/other_scripts/gibbs_timecourse/` |
+| `gibbs_high_oxppp_comparison_ne.py` | Mechanistic (20:80 FBA1:FBA2 dG split) vs aggregated MID differences on the high-oxPPP flux map, NE thermodynamics, INST + SS. It uses **1,2-¹³C glucose** (`"110000"`, `LABELING_PATTERN`, also used by `gibbs_high_oxppp_fit_ne.py`) and, unlike the other scripts, also measures **fdp** (`fdp_123456`) | `results/paper_scripts/standard_ne_fit/gibbs_high_oxppp_ne/` |
+| `gibbs_high_oxppp_fit_ne.py` | freeflux SS + INST fits of the mechanistic MIDs on the standard flux map with the mechanistic (self-fit) and aggregated models, for 5 FBA1:FBA2 ΔG splits; χ², flux and ΔG recovery | `results/paper_scripts/standard_ne_fit/gibbs_standard_fit_ne/` |
+| `gibbs_comparison_1d.py` | Compare mechanistic vs non-mechanistic models (batlow colors, separate final plot) | `results/other_scripts/gibbs_comparison_1d/` |
+| `gibbs_comparison_fba1_fixed.py` | 1D scan: FBA1 fixed at -3.0, FBA2 varies -5 to -1 (with timecourse) | `results/other_scripts/gibbs_comparison_fba1_fixed/` |
+| `gibbs_comparison_fba2_fixed.py` | 1D scan: FBA2 fixed at -2.0, FBA1 varies -5 to -1 (with timecourse) | `results/other_scripts/gibbs_comparison_fba2_fixed/` |
 
 ### Output Files
 
-**gibbs_comparison_1d/** (mechanistic vs non-mechanistic):
+Paths below are relative to `results/`.
+
+**other_scripts/gibbs_comparison_1d/** (mechanistic vs non-mechanistic):
 - `gibbs_comparison_1d.csv` - SSR vs non-mechanistic FBA dG
 - `gibbs_comparison_1d.png` - Timecourse SSR plot (batlow colormap)
 - `gibbs_comparison_1d_final.png` - Final timepoint (1000s) SSR plot
 
-**gibbs_comparison_fba1_fixed/** (FBA1=-3.0 fixed):
+**other_scripts/gibbs_comparison_fba1_fixed/** (FBA1=-3.0 fixed):
 - `gibbs_comparison_fba1_fixed.csv` - SSR vs FBA2 parameter
 - `gibbs_comparison_fba1_fixed.png` - 1D SSR plot
 - `timecourse_chisquared.csv` - Chi-squared at each timepoint per condition
 - `timecourse_aggregated.png` - Total chi-squared vs time for each FBA2 value
 - `timecourse_per_metabolite.png` - Per-metabolite chi-squared subplots
 
-**gibbs_comparison_fba2_fixed/** (FBA2=-2.0 fixed):
+**other_scripts/gibbs_comparison_fba2_fixed/** (FBA2=-2.0 fixed):
 - `gibbs_comparison_fba2_fixed.csv` - SSR vs FBA1 parameter
 - `gibbs_comparison_fba2_fixed.png` - 1D SSR plot
 - `timecourse_chisquared.csv` - Chi-squared at each timepoint per condition
 - `timecourse_aggregated.png` - Total chi-squared vs time for each FBA1 value
 - `timecourse_per_metabolite.png` - Per-metabolite chi-squared subplots
 
-**gibbs_confidence_contours/** (likelihood-ratio confidence regions):
+**paper_scripts/confidence_contours/gibbs_confidence_contours/** (likelihood-ratio confidence regions):
 - `confidence_contours.csv` - Per (equilibrium, sim_mode, angle, alpha) crossing distance `d` and the FBA1/FBA2 ΔG coordinates where the LR statistic crosses the chi-squared threshold (plus `converged`/`unbounded` flags)
 - `confidence_contours.png/pdf` - Per-case grid of contours (one panel per equilibrium × sim_mode)
 - `confidence_contours_overlay.png/pdf` - Single square near-equilibrium panel overlaying INST (blue) and SS (salmon) regions; confidence intervals encoded by saturation, reference point as a black cross
 
-**gibbs_high_oxppp_ne/** (high-oxPPP flux map, mechanistic vs aggregated):
+**paper_scripts/standard_ne_fit/gibbs_high_oxppp_ne/** (high-oxPPP flux map, mechanistic vs aggregated):
 - `mid_differences_ss.csv` - Per metabolite × isotopologue: `mid_agg`, `mid_mech`, `diff` (= mech − agg)
 - `mid_differences_inst.csv` - Same, per timepoint
 - `mech_vs_agg_differences.png/pdf` - SS signed ΔMID bars per isotopologue (left); INST max |ΔMID| vs time (right)
 - `inst_isotopologue_differences.png/pdf` - Per-metabolite signed ΔMID of each isotopologue vs time
 
-**gibbs_standard_fit_ne/** (freeflux fits of the mechanistic MIDs on the standard flux map, from `gibbs_high_oxppp_fit_ne.py`):
+**paper_scripts/standard_ne_fit/gibbs_standard_fit_ne/** (freeflux fits of the mechanistic MIDs on the standard flux map, from `gibbs_high_oxppp_fit_ne.py`):
 - `heatmap_flux_errors.png/pdf` - Net flux % error across the splits: one panel per (mode, model), rows are reactions, columns FBA1 fractions. Clipped to ±15% (`FLUX_CLIP_PCT`; net fluxes are recovered to within ~10%), clipped cells labelled with their value, hatched cells are reactions the model lacks
 - `heatmap_gibbs_errors.png/pdf` - Same for the ΔG % error of the near-equilibrium reactions, clipped to ±200% (`ERROR_CLIP_PCT`)
 - `ssr_flux_errors.png/pdf` - Best SSR (left) and largest absolute net flux % error (right) of each fit vs the FBA1 fraction, one line per model; one row per mode, titled "Steady state" and "Instationary". The SSR panels show each model's 95% χ² upper bound dashed. Every panel has its own y-axis
@@ -259,9 +285,9 @@ longer uses the high-oxPPP map; it imports the rest of its setup (`build_fluxes`
   measured, so only their sum is identifiable. They are plotted as one combined row.
 
 ```bash
-uv run python scripts/gibbs_high_oxppp_fit_ne.py                  # 5 splits x 500 starts per fit on all CPUs but two (~4.5 h on 22 workers)
-uv run python scripts/gibbs_high_oxppp_fit_ne.py --splits 0.1 0.9  # a subset of splits
-uv run python scripts/gibbs_high_oxppp_fit_ne.py --plot-only       # regenerate plots and heatmaps from the saved CSVs
+uv run python paper_scripts/standard_ne_fit/gibbs_high_oxppp_fit_ne.py                  # 5 splits x 500 starts per fit on all CPUs but two (~4.5 h on 22 workers)
+uv run python paper_scripts/standard_ne_fit/gibbs_high_oxppp_fit_ne.py --splits 0.1 0.9  # a subset of splits
+uv run python paper_scripts/standard_ne_fit/gibbs_high_oxppp_fit_ne.py --plot-only       # regenerate plots and heatmaps from the saved CSVs
 ```
 
 ### Confidence Contours (`gibbs_confidence_contours.py`)
@@ -274,21 +300,21 @@ Instead of a brute-force grid (`gibbs_landscape_2d.py`, which it does **not** re
 
 CLI flags:
 ```bash
-uv run python scripts/gibbs_confidence_contours.py                          # full 4-case run (default --workers 12)
-uv run python scripts/gibbs_confidence_contours.py --eq ne --angles 200 --workers 20  # near-equilibrium only, 200 points
-uv run python scripts/gibbs_confidence_contours.py --plot-only              # regenerate plots from the saved CSV
-uv run python scripts/gibbs_confidence_contours.py --smoke                  # fast sanity run
+uv run python paper_scripts/confidence_contours/gibbs_confidence_contours.py                          # full 4-case run (default --workers 12)
+uv run python paper_scripts/confidence_contours/gibbs_confidence_contours.py --eq ne --angles 200 --workers 20  # near-equilibrium only, 200 points
+uv run python paper_scripts/confidence_contours/gibbs_confidence_contours.py --plot-only              # regenerate plots from the saved CSV
+uv run python paper_scripts/confidence_contours/gibbs_confidence_contours.py --smoke                  # fast sanity run
 ```
 
 ### Running Scripts
 ```bash
-uv run python scripts/gibbs_landscape_2d.py        # ~15-20 min (900 simulations)
-uv run python scripts/gibbs_confidence_contours.py # parallelized; ~2 hrs for --angles 200 --eq ne
-uv run python scripts/gibbs_timecourse_chisquared.py
-uv run python scripts/gibbs_comparison_1d.py
-uv run python scripts/gibbs_comparison_fba1_fixed.py
-uv run python scripts/gibbs_comparison_fba2_fixed.py
-uv run python scripts/gibbs_high_oxppp_comparison_ne.py  # ~15 s (4 simulations)
+uv run python paper_scripts/gibbs_landscape/gibbs_landscape_2d.py        # ~15-20 min (900 simulations)
+uv run python paper_scripts/confidence_contours/gibbs_confidence_contours.py # parallelized; ~2 hrs for --angles 200 --eq ne
+uv run python other_scripts/gibbs_timecourse_chisquared.py
+uv run python other_scripts/gibbs_comparison_1d.py
+uv run python other_scripts/gibbs_comparison_fba1_fixed.py
+uv run python other_scripts/gibbs_comparison_fba2_fixed.py
+uv run python paper_scripts/standard_ne_fit/gibbs_high_oxppp_comparison_ne.py  # ~15 s (4 simulations)
 ```
 
 ### Key Functions (shared pattern)
@@ -319,14 +345,16 @@ Scripts for simulating enzyme-catalyzed reactions with isotope labeling using th
 | File | Description |
 |------|-------------|
 | `models/simple_network/reactions.tsv` | Reaction network with atom mappings for enzyme mechanism |
-| `scripts/enzyme_utils.py` | Shared constants, ODE, and utilities for ordered mechanism |
-| `scripts/enzyme_utils_random.py` | Shared constants, ODE, and utilities for random mechanism |
-| `scripts/emu_jax.py` | JAX-compatible EMU simulation (builds network at runtime from freeflux) |
-| `scripts/mcmc/enzyme_simulation.py` | Main simulation with steady-state EMU labeling + MCMC |
-| `scripts/mcmc/enzyme_simulation_instationary.py` | Instationary (time-course) EMU labeling |
-| `scripts/enzyme_simulation_no_labeling.py` | Enzyme kinetics without isotope labeling |
-| `scripts/mcmc/enzyme_simulation_random_instationary.py` | Random mechanism with instationary labeling |
-| `scripts/mcmc/psis_loo_comparison.py` | PSIS-LOO model comparison (ordered vs random) |
+| `paper_scripts/common/enzyme_utils.py` | Shared constants, ODE, and utilities for ordered mechanism |
+| `other_scripts/enzyme_utils_random.py` | Shared constants, ODE, and utilities for random mechanism |
+| `paper_scripts/common/emu_jax.py` | JAX-compatible EMU simulation (builds network at runtime from freeflux) |
+| `paper_scripts/mcmc_11_params/enzyme_simulation.py` | Main simulation with steady-state EMU labeling + MCMC |
+| `paper_scripts/mcmc_11_params/enzyme_simulation_instationary.py` | Instationary (time-course) EMU labeling |
+| `paper_scripts/mcmc_11_params/enzyme_simulation_no_labeling.py` | Enzyme kinetics without isotope labeling |
+| `paper_scripts/mcmc_7_params/enzyme_simulation{,_instationary,_no_labeling}.py` | The same three designs sampling only the 7 identifiable rate parameters (k3f, k3r, k4f, k4r fixed) |
+| `paper_scripts/parameter_identifiability/fisher_information.py` | Fisher information matrix identifiability analysis of the rate parameters |
+| `other_scripts/enzyme_simulation_random_instationary.py` | Random mechanism with instationary labeling |
+| `other_scripts/psis_loo_comparison.py` | PSIS-LOO model comparison (ordered vs random) |
 | `tests/test_validate_exchange_model.py` | Validation: external pool exchange kinetics |
 
 ### Enzyme Kinetics Model
@@ -402,7 +430,7 @@ Default formation energies: A=0.0, P=0.5, Q=-2.5 kJ/mol
 ### MCMC Parameter Estimation
 
 ```python
-from scripts.enzyme_simulation import run_mcmc, DEFAULT_PARAMS, DEFAULT_INITIAL
+from paper_scripts.mcmc_11_params.enzyme_simulation import run_mcmc, DEFAULT_PARAMS, DEFAULT_INITIAL
 
 results = run_mcmc(
     ref_params=DEFAULT_PARAMS,

@@ -20,7 +20,7 @@ jax.config.update("jax_enable_x64", True)
 
 import jax.numpy as jnp
 
-from scripts.emu_jax import (
+from paper_scripts.common.emu_jax import (
     build_emu_network,
     simulate_inst_mdvs_pure_jax,
     precompute_matrix_structure,
@@ -28,7 +28,7 @@ from scripts.emu_jax import (
     create_conc_array_from_dict,
     run_freeflux_inst_simulation,
 )
-from scripts.mcmc.enzyme_simulation import (
+from paper_scripts.mcmc_11_params.enzyme_simulation import (
     DEFAULT_PARAMS,
     DEFAULT_INITIAL,
     get_pure_jax_emu_network,

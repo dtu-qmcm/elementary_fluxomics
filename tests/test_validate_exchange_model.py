@@ -13,7 +13,7 @@ import jax
 import jax.numpy as jnp
 import diffrax
 
-from scripts.enzyme_simulation_no_labeling import (
+from paper_scripts.mcmc_11_params.enzyme_simulation_no_labeling import (
     DEFAULT_PARAMS as NL_PARAMS,
     DEFAULT_INITIAL as NL_INITIAL,
     compute_rates as nl_compute_rates,

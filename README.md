@@ -12,43 +12,55 @@ uv sync
 
 ## Scripts
 
-### Enzyme simulation & MCMC
+Scripts are split into two folders, and their outputs follow the same split under `results/`:
+
+- `paper_scripts/` holds the scripts behind the paper, one subfolder per analysis, with
+  results in `results/paper_scripts/<set>/`. See [`paper_scripts/README.md`](paper_scripts/README.md).
+- `other_scripts/` holds exploratory, superseded and supplementary scripts, with results in
+  `results/other_scripts/`.
+
+Run scripts from the repository root, e.g. `uv run python paper_scripts/gibbs_landscape/gibbs_landscape_2d.py --mode ne`.
+The top-level `figures/` holds the hand-assembled (Inkscape) paper figures; figures
+written by scripts go to a `figures/` subfolder of their results folder.
+
+### Paper scripts (`paper_scripts/`)
+
+| Folder | Script | Description |
+|--------|--------|-------------|
+| `common/` | `emu_jax.py` | JAX-compatible EMU MDV simulation with matrix exponential INST integration |
+| `common/` | `enzyme_utils.py` | Shared constants and functions for ordered mechanism including Wegscheider constraints |
+| `common/` | `style.py` | Shared plotting style |
+| `forward_simulations/` | `gibbs_fba_split_comparison.py`, `gibbs_fba_split_comparison_ne.py` | Mechanistic vs aggregated forward simulations (SS + INST) far from / near equilibrium |
+| `forward_simulations/` | `plot_ffe_ne_comparison.py` | 2x2 FFE/NE x SS/INST comparison figure |
+| `confidence_contours/` | `gibbs_confidence_contours.py` | Near-equilibrium likelihood-ratio confidence contours, SS and INST overlaid |
+| `mcmc_7_params/` | `enzyme_simulation{,_instationary,_no_labeling}.py` | MCMC fits of the 7 identifiable rate parameters |
+| `mcmc_7_params/` | `plot_parameter_comparison_identifiable.py` | Credible intervals of the 7-parameter fits |
+| `gibbs_landscape/` | `gibbs_landscape_2d.py` | 2D grid scan of FBA1/FBA2 Gibbs energies for the log-likelihood landscape |
+| `gibbs_landscape/` | `plot_landscape_combined.py` | 2x2 NE/FFE x SS/INST landscape figure |
+| `mcmc_11_params/` | `enzyme_simulation.py` | Steady-state enzyme kinetics with isotopomer labeling and MCMC parameter estimation |
+| `mcmc_11_params/` | `enzyme_simulation_instationary.py` | Time-course enzyme kinetics with MCMC from instationary MID data |
+| `mcmc_11_params/` | `enzyme_simulation_no_labeling.py` | Enzyme kinetics without isotope labeling for validating kinetic parameters |
+| `mcmc_11_params/` | `plot_parameter_comparison.py` | Credible intervals of the 11-parameter fits |
+| `parameter_identifiability/` | `fisher_information.py` | Fisher information matrix identifiability analysis |
+| `standard_ne_fit/` | `gibbs_high_oxppp_fit_ne.py` | Aggregated vs mechanistic freeflux fits on the standard near-equilibrium flux map |
+| `standard_ne_fit/` | `gibbs_high_oxppp_comparison_ne.py` | Simulation setup imported by the fit; run alone, compares MIDs on the high-oxPPP map |
+
+### Other scripts (`other_scripts/`)
 
 | Script | Description |
 |--------|-------------|
-| `enzyme_simulation.py` | Steady-state enzyme kinetics with isotopomer labeling and MCMC parameter estimation |
-| `enzyme_simulation_instationary.py` | Time-course enzyme kinetics with MCMC from instationary MID data |
-| `enzyme_simulation_no_labeling.py` | Enzyme kinetics without isotope labeling for validating kinetic parameters |
 | `enzyme_simulation_random_instationary.py` | Random uni-bi enzyme mechanism with instationary isotope labeling |
-
-### Core simulation
-
-| Script | Description |
-|--------|-------------|
-| `emu_jax.py` | JAX-compatible EMU MDV simulation with matrix exponential INST integration |
-
-### Shared utilities
-
-| Script | Description |
-|--------|-------------|
-| `enzyme_utils.py` | Shared constants and functions for ordered mechanism including Wegscheider constraints |
 | `enzyme_utils_random.py` | Shared constants and functions for random mechanism |
-
-### Gibbs energy analysis
-
-| Script | Description |
-|--------|-------------|
-| `gibbs_landscape_2d.py` | 2D grid scan of FBA1/FBA2 Gibbs energies for negative log-likelihood landscape |
+| `psis_loo_comparison.py` | PSIS-LOO cross-validation comparing ordered vs random enzyme mechanisms |
 | `gibbs_comparison_1d.py` | Compare mechanistic vs non-mechanistic model as FBA dG varies |
 | `gibbs_comparison_fba1_fixed.py` | 1D scan of FBA2 with FBA1 fixed at -3.0 kJ/mol, with timecourse |
 | `gibbs_comparison_fba2_fixed.py` | 1D scan of FBA1 with FBA2 fixed at -2.0 kJ/mol, with timecourse |
 | `gibbs_timecourse_chisquared.py` | Timecourse chi-squared analysis where FBA1 + FBA2 = -5 kJ/mol |
-
-### Model comparison
-
-| Script | Description |
-|--------|-------------|
-| `psis_loo_comparison.py` | PSIS-LOO cross-validation comparing ordered vs random enzyme mechanisms |
+| `fit_mechanistic_vs_aggregated.py` | Earlier SS/INST fits of aggregated and mechanistic models across FBA partitions |
+| `compare_gibbs_energies.py` | Gibbs energies recovered by the fits of `fit_mechanistic_vs_aggregated.py` |
+| `plot_flux_error_heatmaps.py` | Forward/reverse flux error heatmaps for those fits |
+| `plot_pairplot.py` | Posterior pairplot of the 11-parameter MCMC fits |
+| `plot_transition_state_diagram.py` | Free-energy profiles from the 7- and 11-parameter MCMC fits |
 
 ## Tests
 

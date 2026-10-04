@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 # Add scripts to path before importing JAX-related modules
-sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "paper_scripts" / "common"))
 
 # Import emu_jax first to ensure JAX config is set before jax.numpy import
 from emu_jax import (
