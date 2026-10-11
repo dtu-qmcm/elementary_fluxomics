@@ -2,129 +2,112 @@
 Plot combined 2x2 Gibbs landscape heatmaps.
 
 Layout:
-| NE Steady-State  | FFE Steady-State  |
-| NE Timecourse    | FFE Timecourse    |
+| NE steady state  | FFE steady state  |
+| NE instationary  | FFE instationary  |
 
-Shared color axis across all panels, single colorbar on right.
-NLL converted to LL (multiply by -1), timecourse normalized by n_timepoints (100).
+Colour is the log-likelihood (LL = -NLL) of each FBA1/FBA2 ΔG pair against the
+reference (equal split, black cross); brighter is more likely. The instationary
+LL sums over every timepoint, each measuring the same isotopologues as the
+steady-state experiment, so it is divided by the number of timepoints to put it
+on the steady-state scale. NE and FFE each get their own colour scale, shared by
+their SS and INST panels, with the colourbar under the instationary panel.
 """
 
 from pathlib import Path
 import sys
 
 import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
 from cmcrameri import cm
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "common"))
+SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPT_DIR.parent / "common"))
 from style import apply_style, DOUBLE_COL
+from gibbs_landscape_2d import MODE_CONFIGS, TIMEPOINTS, get_reference_condition
 
 apply_style()
 
-# Paths
-RESULTS_DIR = Path(__file__).parent.parent.parent / "results" / "paper_scripts" / "gibbs_landscape"
-FFE_DIR = RESULTS_DIR / "gibbs_landscape_2d_ffe"
-NE_DIR = RESULTS_DIR / "gibbs_landscape_2d_ne"
-FIGURES_DIR = RESULTS_DIR / "figures"
+FIGURES_DIR = MODE_CONFIGS["ne"]["results_dir"].parent / "figures"
 
-# Number of timepoints for normalization
-N_TIMEPOINTS = 100
+# Instationary measurements per steady-state measurement
+N_TIMEPOINTS = len(TIMEPOINTS)
+
+COLUMNS = {"ne": "Near equilibrium", "ffe": "Far from equilibrium"}
+ROWS = {"ss": "Steady state", "inst": "Instationary"}
+
+X_LABEL = r"$\Delta_r G_{\mathrm{FBA}_2}$ $\left(\frac{kJ}{mol}\right)$"
+Y_LABEL = r"$\Delta_r G_{\mathrm{FBA}_1}$ $\left(\frac{kJ}{mol}\right)$"
 
 
-def load_and_pivot(csv_path: Path):
-    """Load CSV and pivot to 2D arrays for heatmap."""
+def load_landscape(csv_path: Path):
+    """Load a landscape CSV and pivot the SS and INST log-likelihoods to 2D.
+
+    Rows are FBA1 ΔG (y-axis), columns FBA2 ΔG (x-axis).
+    """
     df = pd.read_csv(csv_path)
-
-    # Get unique values for axes
-    fba1_vals = np.sort(df["FBA1_deltaG"].unique())
-    fba2_vals = np.sort(df["FBA2_deltaG"].unique())
-
-    # Create pivot tables
-    # Convert NLL to LL (multiply by -1)
-    # Normalize timecourse by n_timepoints
-    ll_final = df.pivot(
-        index="FBA1_deltaG", columns="FBA2_deltaG", values="nll_final"
-    ).values * -1
-
-    ll_timecourse = df.pivot(
-        index="FBA1_deltaG", columns="FBA2_deltaG", values="nll_timecourse"
-    ).values * -1 / N_TIMEPOINTS
-
-    return fba1_vals, fba2_vals, ll_final, ll_timecourse
+    ll_ss = -df.pivot(index="FBA1_deltaG", columns="FBA2_deltaG", values="nll_final")
+    ll_inst = -df.pivot(index="FBA1_deltaG", columns="FBA2_deltaG", values="nll_timecourse")
+    return {"ss": ll_ss, "inst": ll_inst / N_TIMEPOINTS}
 
 
 def main():
     """Generate combined 2x2 heatmap."""
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Load data
-    ne_fba1, ne_fba2, ne_ll_ss, ne_ll_tc = load_and_pivot(NE_DIR / "gibbs_landscape_2d.csv")
-    ffe_fba1, ffe_fba2, ffe_ll_ss, ffe_ll_tc = load_and_pivot(FFE_DIR / "gibbs_landscape_2d.csv")
+    fig = plt.figure(figsize=(DOUBLE_COL, DOUBLE_COL * 1.0), layout="constrained")
+    gs = fig.add_gridspec(3, 2, height_ratios=[1, 1, 0.045])
 
-    # Compute separate color scales per column (NE vs FFE have very different ranges)
-    ne_vmin = min(ne_ll_ss.min(), ne_ll_tc.min())
-    ne_vmax = max(ne_ll_ss.max(), ne_ll_tc.max())
-    ffe_vmin = min(ffe_ll_ss.min(), ffe_ll_tc.min())
-    ffe_vmax = max(ffe_ll_ss.max(), ffe_ll_tc.max())
+    for col, (eq, eq_label) in enumerate(COLUMNS.items()):
+        landscapes = load_landscape(MODE_CONFIGS[eq]["results_dir"] / "gibbs_landscape_2d.csv")
+        ref_fba1, ref_fba2 = get_reference_condition(MODE_CONFIGS[eq]["total_fba_dg"])
 
-    # Create 2x2 figure
-    fig, axes = plt.subplots(2, 2, figsize=(DOUBLE_COL, DOUBLE_COL * 0.85))
-
-    # Data mapping: (row, col) -> (fba1, fba2, data, vmin, vmax)
-    panels = {
-        (0, 0): (ne_fba1, ne_fba2, ne_ll_ss, ne_vmin, ne_vmax),    # NE Steady-State
-        (0, 1): (ffe_fba1, ffe_fba2, ffe_ll_ss, ffe_vmin, ffe_vmax), # FFE Steady-State
-        (1, 0): (ne_fba1, ne_fba2, ne_ll_tc, ne_vmin, ne_vmax),    # NE Timecourse
-        (1, 1): (ffe_fba1, ffe_fba2, ffe_ll_tc, ffe_vmin, ffe_vmax), # FFE Timecourse
-    }
-
-    images = {}
-    for (row, col), (fba1_vals, fba2_vals, data, vmin, vmax) in panels.items():
-        ax = axes[row, col]
-
-        # imshow expects (rows, cols) where rows are y-axis
-        # Our pivot has FBA1 as rows (index) and FBA2 as columns
-        # So FBA1 is y-axis, FBA2 is x-axis
-        im = ax.imshow(
-            data,
-            origin="lower",
-            aspect="auto",
-            cmap=cm.batlow,
-            vmin=vmin,
-            vmax=vmax,
-            extent=[fba2_vals.min(), fba2_vals.max(), fba1_vals.min(), fba1_vals.max()],
+        # One colour scale per equilibrium, shared by its SS and INST panels
+        norm = plt.Normalize(
+            vmin=min(ll.values.min() for ll in landscapes.values()),
+            vmax=max(ll.values.max() for ll in landscapes.values()),
         )
-        images[(row, col)] = im
 
-        # Heatmaps need all four spines
-        ax.spines["top"].set_visible(True)
-        ax.spines["right"].set_visible(True)
+        top_ax = None
+        for row, (sim_mode, mode_label) in enumerate(ROWS.items()):
+            ax = fig.add_subplot(gs[row, col], sharex=top_ax)
+            top_ax = top_ax or ax
+            ll = landscapes[sim_mode]
 
-        if row == 1:
-            ax.set_xlabel(r"FBA2 $\Delta G$ (kJ/mol)")
+            mesh = ax.pcolormesh(
+                ll.columns, ll.index, ll.values,
+                shading="nearest", cmap=cm.batlow, norm=norm, rasterized=True,
+            )
+            ax.plot(ref_fba2, ref_fba1, marker="x", color="black", ms=5, mew=1.2,
+                    linestyle="none")
+            ax.set_aspect("equal")
 
-        if col == 0:
-            ax.set_ylabel(r"FBA1 $\Delta G$ (kJ/mol)")
+            # Heatmaps need all four spines
+            ax.spines["top"].set_visible(True)
+            ax.spines["right"].set_visible(True)
 
-    # Add separate colorbars for NE and FFE below each column
-    fig.subplots_adjust(bottom=0.18, hspace=0.25, wspace=0.25)
-    # NE colorbar (below left column)
-    cbar_ax_ne = fig.add_axes([0.12, 0.06, 0.35, 0.02])
-    fig.colorbar(images[(0, 0)], cax=cbar_ax_ne, orientation="horizontal", label="LL (NE)")
-    # FFE colorbar (below right column)
-    cbar_ax_ffe = fig.add_axes([0.57, 0.06, 0.35, 0.02])
-    fig.colorbar(images[(0, 1)], cax=cbar_ax_ffe, orientation="horizontal", label="LL (FFE)")
+            if row == 0:
+                ax.set_title(eq_label)
+                ax.tick_params(labelbottom=False)
+            else:
+                ax.set_xlabel(X_LABEL)
 
-    # Save outputs
-    png_path = FIGURES_DIR / "gibbs_landscape_2d_combined.png"
-    pdf_path = FIGURES_DIR / "gibbs_landscape_2d_combined.pdf"
-    fig.savefig(png_path)
-    fig.savefig(pdf_path)
+            if col == 0:
+                ax.set_ylabel(Y_LABEL)
+                ax.annotate(
+                    mode_label, xy=(0, 0.5), xycoords="axes fraction",
+                    xytext=(-50, 0), textcoords="offset points",
+                    rotation=90, ha="right", va="center",
+                    fontsize=plt.rcParams["axes.titlesize"],
+                )
+
+        cbar = fig.colorbar(mesh, cax=fig.add_subplot(gs[2, col]), orientation="horizontal")
+        cbar.set_label("Log-likelihood")
+
+    for ext in ("png", "pdf", "svg"):
+        out = FIGURES_DIR / f"gibbs_landscape_2d_combined.{ext}"
+        fig.savefig(out)
+        print(f"Saved: {out}")
     plt.close(fig)
-
-    print(f"Saved: {png_path}")
-    print(f"Saved: {pdf_path}")
 
 
 if __name__ == "__main__":
